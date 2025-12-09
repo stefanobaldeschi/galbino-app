@@ -3,8 +3,31 @@ import datetime
 import csv
 import io
 
+# --- 0. SICUREZZA (LOGIN) ---
+def check_password():
+    """Controlla se la password inserita è corretta."""
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.title("🔒 Area Riservata Castello")
+    pwd = st.text_input("Inserisci la Password:", type="password")
+    
+    if st.button("Accedi"):
+        # Controlla se la password corrisponde a quella nei segreti
+        if pwd == st.secrets["password"]:
+            st.session_state["password_correct"] = True
+            st.rerun()
+        else:
+            st.error("😕 Password sbagliata")
+    return False
+
+# Se la password non è corretta, ferma tutto qui.
+if not check_password():
+    st.stop()
+
+# --- DA QUI IN POI C'È L'APP VERA E PROPRIA ---
+
 # --- 1. CONFIGURAZIONE & LOGICA ---
-# Prezzi modificati: Prima Spesa a 0
 LISTA_SERVIZI = [
     ("Wedding Fee", 30), 
     ("Breakfast", 20),
@@ -16,7 +39,7 @@ LISTA_SERVIZI = [
     ("Truffle Hunting", 150),
     ("Ebike Tour", 80),
     ("Transfer", 150),
-    ("Prima Spesa", 0),  # PREZZO ZERO
+    ("Prima Spesa", 0),
     ("Extra Cleaning", 200)
 ]
 
@@ -80,7 +103,9 @@ def calcola_soggiorno(data_arrivo, notti, ospiti):
     return tot, log
 
 # --- INTERFACCIA WEB ---
-st.set_page_config(page_title="Preventivi Galbino", page_icon="🏰")
+# Nota: set_page_config deve essere la prima istruzione Streamlit dopo i controlli o all'inizio
+# In questo caso la mettiamo qui perché la password blocca tutto prima.
+# (Se ti da errore, spostala in cima al file, prima di check_password)
 
 st.title("🏰 Castello di Galbino")
 st.subheader("Calcolatore Preventivi")
@@ -104,39 +129,29 @@ servizi_selezionati = []
 totale_servizi = 0
 
 for nome, prezzo_def in LISTA_SERVIZI:
-    # MODIFICA: Titolo pulito senza prezzo
     with st.expander(f"{nome}"):
         
-        # CASO 1: WEDDING FEE
         if "Wedding" in nome:
             c1, c2 = st.columns(2)
             p_unit = c1.number_input(f"Prezzo {nome}", value=prezzo_def, key=f"p_{nome}")
             pax = c2.number_input("Numero Invitati", min_value=0, value=0, key=f"x_{nome}")
             qta = 1 
         
-        # CASO 2: PRIMA SPESA (Solo inserimento costo totale)
         elif "Prima Spesa" in nome:
-            # Qui mostriamo solo il prezzo. Pax e Qta sono fissi a 1.
             p_unit = st.number_input(f"Costo Totale Servizio/Scontrino", value=0.0, key=f"p_{nome}")
             pax = 1
             qta = 1
-            # Se l'utente lascia 0.0, non viene aggiunto nulla. 
-            # Se mette es. 100.0, il sistema calcolerà 100 * 1 * 1.
 
-        # CASO 3: STANDARD
         else:
             c1, c2, c3 = st.columns(3)
             p_unit = c1.number_input(f"Prezzo {nome}", value=prezzo_def, key=f"p_{nome}")
             pax = c2.number_input(f"Pax", min_value=0, value=0, key=f"x_{nome}")
             qta = c3.number_input(f"Qta/Volte", min_value=0, value=0, key=f"q_{nome}")
         
-        # LOGICA CALCOLO COMUNE
-        # Nota: per Prima Spesa, pax e qta sono 1. Quindi se p_unit > 0 entra qui.
         if pax > 0 and qta > 0 and p_unit > 0:
             sub = p_unit * pax * qta
             totale_servizi += sub
             
-            # Formattazione stringhe diversa per pulizia
             if "Wedding" in nome:
                  servizi_selezionati.append(f"{nome}: €{p_unit} x {pax} invitati = €{sub:.2f}")
             elif "Prima Spesa" in nome:
@@ -199,7 +214,7 @@ if st.button("CALCOLA PREVENTIVO", type="primary", use_container_width=True):
                 if note:
                     st.info(f"Note: {note}")
 
-            # FILE CSV
+            # CSV
             csv_buffer = io.StringIO()
             writer = csv.writer(csv_buffer)
             writer.writerow(["Data", "Cliente", "CheckIn", "Notti", "Totale", "Dettagli", "Note"])
