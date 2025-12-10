@@ -6,7 +6,7 @@ import requests
 from icalendar import Calendar
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import traceback  # Fondamentale per vedere gli errori nascosti
+import traceback
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Preventivi Galbino", page_icon="🏰", layout="wide")
@@ -15,7 +15,6 @@ st.set_page_config(page_title="Preventivi Galbino", page_icon="🏰", layout="wi
 LODGIFY_ICAL_URL = "https://www.lodgify.com/5bab045e-30ec-4edf-aabf-970d352e7549.ics"
 
 # --- 1. DATI ---
-# L'ordine qui determina l'ordine delle colonne nel file Excel/DB.
 LISTA_SERVIZI = [
     ("Wedding Fee", 30), 
     ("Breakfast", 20),
@@ -111,33 +110,14 @@ def check_availability(checkin, checkout, url):
         else: return True, "Libero"
     except Exception as e: return None, f"Errore: {e}"
 
-# --- SALVATAGGIO DATABASE GOOGLE (VERSIONE DIAGNOSTICA) ---
+# --- SALVATAGGIO DATABASE GOOGLE ---
 def salva_su_google_sheets(riga_dati):
-    status = st.empty() # Placeholder per messaggi
     try:
-        status.info("1. Controllo configurazione...")
-        if "gcp_service_account" not in st.secrets:
-            st.error("❌ ERRORE: Manca [gcp_service_account] nei Secrets!")
-            return False
-        if "spreadsheet_url" not in st.secrets:
-            st.error("❌ ERRORE: Manca 'spreadsheet_url' nei Secrets!")
-            return False
-            
-        status.info("2. Connessione a Google...")
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        
-        # Gestione robusta del dizionario secrets
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
         client = gspread.authorize(creds)
-        
-        status.info("3. Apertura Foglio di calcolo...")
         sheet = client.open_by_url(st.secrets["spreadsheet_url"]).sheet1
-        
-        status.info("4. Scrittura dati...")
         sheet.append_row(riga_dati)
-        
-        status.success("✅ Salvataggio completato!")
         return True
     except Exception as e:
         st.error("⚠️ ERRORE SALVATAGGIO CLOUD")
@@ -146,7 +126,7 @@ def salva_su_google_sheets(riga_dati):
         return False
 
 # --- EXCEL GENERATOR ---
-def generate_excel(cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi, sconto, totale_gen, costo_medio, note):
+def generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi, sconto, totale_gen, costo_medio, note):
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {'in_memory': True})
     worksheet = workbook.add_worksheet("Preventivo")
@@ -155,18 +135,22 @@ def generate_excel(cliente, checkin, checkout, notti, ospiti, affitto_netto, pul
     currency = workbook.add_format({'num_format': '€ #,##0.00', 'border': 1})
     normal = workbook.add_format({'border': 1, 'align': 'center'})
     
-    general_headers = ["Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto Totale", "Pulizie"]
+    # Formato Date Italiano
+    general_headers = ["Autore", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto Totale", "Pulizie"]
     worksheet.write_row('A1', general_headers, bold)
-    worksheet.write('A2', datetime.date.today().strftime("%d/%m/%Y"), normal)
-    worksheet.write('B2', cliente, normal)
-    worksheet.write('C2', checkin.strftime("%d/%m/%Y"), normal)
-    worksheet.write('D2', checkout.strftime("%d/%m/%Y"), normal)
-    worksheet.write('E2', notti, normal)
-    worksheet.write('F2', ospiti, normal)
-    worksheet.write('G2', affitto_netto, currency)
-    worksheet.write('H2', pulizie, currency)
+    
+    # Scrittura date formattate
+    worksheet.write('A2', autore, normal)
+    worksheet.write('B2', datetime.date.today().strftime("%d/%m/%Y"), normal)
+    worksheet.write('C2', cliente, normal)
+    worksheet.write('D2', checkin.strftime("%d/%m/%Y"), normal)
+    worksheet.write('E2', checkout.strftime("%d/%m/%Y"), normal)
+    worksheet.write('F2', notti, normal)
+    worksheet.write('G2', ospiti, normal)
+    worksheet.write('H2', affitto_netto, currency)
+    worksheet.write('I2', pulizie, currency)
 
-    col_idx = 8 
+    col_idx = 9 
     for nome, _ in LISTA_SERVIZI:
         worksheet.merge_range(0, col_idx, 0, col_idx+3, nome.upper(), merge_format)
         worksheet.write(1, col_idx, "€ Unit", bold)
@@ -207,14 +191,23 @@ st.title("🏰 Castello di Galbino")
 
 with st.container():
     st.markdown("### 📅 Dati Soggiorno")
-    cliente = st.text_input("Nome Cliente")
+    
+    c_aut, c_cli = st.columns([1, 3])
+    with c_aut:
+        autore = st.selectbox("Autore Preventivo", ["Seleziona...", "Luca", "Stefano"])
+    with c_cli:
+        cliente = st.text_input("Nome Cliente")
+    
     c1, c2, c3 = st.columns(3)
-    with c1: checkin = st.date_input("Check-In", value=datetime.date.today(), key='data_in', on_change=aggiorna_date)
+    # FORMATO ITALIANO NELL'INPUT (DD/MM/YYYY)
+    with c1: 
+        checkin = st.date_input("Check-In", value=datetime.date.today(), key='data_in', on_change=aggiorna_date, format="DD/MM/YYYY")
     with c2: 
         default_out = datetime.date.today() + datetime.timedelta(days=MIN_STAY)
         if 'data_out' not in st.session_state: st.session_state.data_out = default_out
-        checkout = st.date_input("Check-Out", key='data_out')
-    with c3: ospiti = st.number_input("Ospiti a Dormire", min_value=1, value=10)
+        checkout = st.date_input("Check-Out", key='data_out', format="DD/MM/YYYY")
+    with c3: 
+        ospiti = st.number_input("Ospiti a Dormire", min_value=1, value=10)
 
 is_free, msg = check_availability(checkin, checkout, LODGIFY_ICAL_URL)
 if is_free is True: st.success(f"✅ DATE DISPONIBILI")
@@ -274,9 +267,12 @@ with c_f1: sconto = st.number_input("Sconto Manuale (€)", min_value=0.0, step=
 with c_f2: note = st.text_area("Note interne")
 
 if st.button("CALCOLA, SALVA SU CLOUD E SCARICA", type="primary", use_container_width=True):
-    notti = (checkout - checkin).days
-    if notti < MIN_STAY: st.error(f"⚠️ Minimo {MIN_STAY} notti.")
-    elif notti <= 0: st.error("⚠️ Date non valide.")
+    if autore == "Seleziona...":
+        st.error("⚠️ ATTENZIONE: Devi selezionare chi sta facendo il preventivo (Luca o Stefano)!")
+    elif notti < MIN_STAY: 
+        st.error(f"⚠️ Minimo {MIN_STAY} notti.")
+    elif notti <= 0: 
+        st.error("⚠️ Date non valide.")
     else:
         costo_affitto, log_affitto = calcola_soggiorno(checkin, notti, ospiti)
         if costo_affitto is None: st.error(f"❌ {log_affitto}")
@@ -294,12 +290,16 @@ if st.button("CALCOLA, SALVA SU CLOUD E SCARICA", type="primary", use_container_
             
             st.success(f"✅ TOTALE: € {totale_gen:,.2f}")
             
-            # --- DATA PREP PER GOOGLE SHEETS ---
+            # --- SALVATAGGIO SU GOOGLE SHEETS (Con formato Date IT) ---
             riga_db = [
-                str(datetime.date.today()), cliente, str(checkin), str(checkout), notti, ospiti, affitto_netto, pulizie
+                autore,
+                datetime.date.today().strftime("%d/%m/%Y"), # Oggi
+                cliente,
+                checkin.strftime("%d/%m/%Y"), # CheckIn
+                checkout.strftime("%d/%m/%Y"), # CheckOut
+                notti, ospiti, affitto_netto, pulizie
             ]
             
-            # Loop per garantire l'allineamento con le 60 colonne
             for s_nome, _ in LISTA_SERVIZI:
                 if s_nome in dettagli_servizi_excel:
                     dati = dettagli_servizi_excel[s_nome]
@@ -320,5 +320,5 @@ if st.button("CALCOLA, SALVA SU CLOUD E SCARICA", type="primary", use_container_
                 st.write("---")
                 st.write(f"🌙 **Media Affitto a notte:** €{costo_medio_notte:,.2f}")
 
-            excel_data = generate_excel(cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi_excel, sconto, totale_gen, costo_medio_notte, note)
+            excel_data = generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi_excel, sconto, totale_gen, costo_medio_notte, note)
             st.download_button(label="📥 Scarica Excel (.xlsx)", data=excel_data, file_name=f"Prev_{cliente}_{datetime.date.today()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
