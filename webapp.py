@@ -125,7 +125,7 @@ def salva_su_google_sheets(riga_dati):
         st.code(traceback.format_exc())
         return False
 
-# --- DOWNLOADER DATABASE COMPLETO ---
+# --- DOWNLOADER DATABASE COMPLETO (CON AUTOFIT) ---
 def download_full_db_excel():
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
@@ -147,6 +147,21 @@ def download_full_db_excel():
         fmt_currency = workbook.add_format({'num_format': '#,##0.00 €', 'border': 1, 'align': 'center'})
         fmt_normal = workbook.add_format({'border': 1, 'align': 'center'})
         
+        # --- ALGORITMO AUTO-FIT COLONNE ---
+        # Calcoliamo la larghezza massima per ogni colonna basata sui dati
+        col_widths = {}
+        for row in data:
+            for i, cell_value in enumerate(row):
+                length = len(str(cell_value))
+                # Se la colonna non è ancora tracciata o il nuovo valore è più lungo
+                if i not in col_widths or length > col_widths[i]:
+                    col_widths[i] = length
+        
+        # Applichiamo le larghezze (con un minimo di 10 e massimo di 60)
+        for col_idx, width in col_widths.items():
+            final_width = max(10, min(width + 2, 60)) # +2 per margine
+            worksheet.set_column(col_idx, col_idx, final_width)
+
         # Intestazioni
         headers_gen = ["Autore", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto", "Media/Notte", "Pulizie"]
         for i, h in enumerate(headers_gen):
@@ -171,17 +186,14 @@ def download_full_db_excel():
         for row_num, row_data in enumerate(raw_rows):
             excel_row = row_num + 2
             try:
-                # Colonne 0-6 (Testo/Numeri semplici)
                 for c in range(7): worksheet.write(excel_row, c, row_data[c], fmt_normal)
                 
-                # Funzione per pulire valuta
                 to_float = lambda x: float(str(x).replace(',', '.').replace('€', '').strip()) if x and x != '0' else 0.0
                 
-                worksheet.write(excel_row, 7, to_float(row_data[7]), fmt_currency) # Affitto
-                worksheet.write(excel_row, 8, to_float(row_data[8]), fmt_currency) # Media
-                worksheet.write(excel_row, 9, to_float(row_data[9]), fmt_currency) # Pulizie
+                worksheet.write(excel_row, 7, to_float(row_data[7]), fmt_currency) 
+                worksheet.write(excel_row, 8, to_float(row_data[8]), fmt_currency) 
+                worksheet.write(excel_row, 9, to_float(row_data[9]), fmt_currency) 
                 
-                # Servizi
                 current_col_idx = 10
                 db_service_start_idx = 10
                 
@@ -193,21 +205,20 @@ def download_full_db_excel():
                     current_col_idx += 4
                     db_service_start_idx += 4
                 
-                # Totali
                 worksheet.write(excel_row, current_col_idx + 1, to_float(row_data[db_service_start_idx]), fmt_currency) # Sconto
                 worksheet.write(excel_row, current_col_idx + 2, to_float(row_data[db_service_start_idx+1]), fmt_currency) # Totale
                 note_val = row_data[db_service_start_idx+2] if len(row_data) > db_service_start_idx+2 else ""
                 worksheet.write(excel_row, current_col_idx + 3, note_val, fmt_normal)
 
             except Exception:
-                continue # Salta righe corrotte
+                continue 
 
         workbook.close()
         return output.getvalue()
     except Exception:
         return None
 
-# --- EXCEL GENERATOR (Preventivo Singolo) ---
+# --- EXCEL GENERATOR (Preventivo Singolo - Larghezze Fisse Intelligenti) ---
 def generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi, sconto, totale_gen, costo_medio, note):
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {'in_memory': True})
@@ -216,6 +227,28 @@ def generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_ne
     merge_format = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#FFD700'}) 
     currency = workbook.add_format({'num_format': '#,##0.00 €', 'border': 1, 'align': 'center'})
     normal = workbook.add_format({'border': 1, 'align': 'center'})
+    
+    # --- IMPOSTAZIONE LARGHEZZA COLONNE (Fixed Smart Widths) ---
+    worksheet.set_column('A:A', 15)  # Autore
+    worksheet.set_column('B:B', 12)  # Data
+    worksheet.set_column('C:C', 30)  # Cliente (Largo)
+    worksheet.set_column('D:E', 13)  # Date Checkin/out
+    worksheet.set_column('F:G', 8)   # Notti/Ospiti (Stretto)
+    worksheet.set_column('H:J', 16)  # Affitto/Media/Pulizie (Largo per cifre)
+    
+    # Loop per le colonne dei servizi (K in poi)
+    # K=10. Ogni servizio occupa 4 colonne (10, 11, 12, 13)
+    start_col = 10
+    for _ in LISTA_SERVIZI:
+        worksheet.set_column(start_col, start_col, 14)     # Prezzo Unit
+        worksheet.set_column(start_col+1, start_col+2, 6)  # Pax/Qta (Stretti)
+        worksheet.set_column(start_col+3, start_col+3, 14) # Totale
+        start_col += 4
+        
+    # Totali Finali
+    worksheet.set_column(start_col+1, start_col+2, 18) # Sconto e Totale
+    worksheet.set_column(start_col+3, start_col+3, 50) # Note (Molto largo)
+
     
     general_headers = ["Autore", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto", "Media Affitto/Notte", "Pulizie"]
     worksheet.write_row('A1', general_headers, bold)
