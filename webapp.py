@@ -6,6 +6,7 @@ import requests
 from icalendar import Calendar
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import traceback  # Fondamentale per vedere gli errori nascosti
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Preventivi Galbino", page_icon="🏰", layout="wide")
@@ -14,7 +15,7 @@ st.set_page_config(page_title="Preventivi Galbino", page_icon="🏰", layout="wi
 LODGIFY_ICAL_URL = "https://www.lodgify.com/5bab045e-30ec-4edf-aabf-970d352e7549.ics"
 
 # --- 1. DATI ---
-# L'ordine qui determina l'ordine delle colonne nel file Excel/DB. Non cambiarlo!
+# L'ordine qui determina l'ordine delle colonne nel file Excel/DB.
 LISTA_SERVIZI = [
     ("Wedding Fee", 30), 
     ("Breakfast", 20),
@@ -110,20 +111,41 @@ def check_availability(checkin, checkout, url):
         else: return True, "Libero"
     except Exception as e: return None, f"Errore: {e}"
 
-# --- SALVATAGGIO DATABASE GOOGLE ---
+# --- SALVATAGGIO DATABASE GOOGLE (VERSIONE DIAGNOSTICA) ---
 def salva_su_google_sheets(riga_dati):
+    status = st.empty() # Placeholder per messaggi
     try:
+        status.info("1. Controllo configurazione...")
+        if "gcp_service_account" not in st.secrets:
+            st.error("❌ ERRORE: Manca [gcp_service_account] nei Secrets!")
+            return False
+        if "spreadsheet_url" not in st.secrets:
+            st.error("❌ ERRORE: Manca 'spreadsheet_url' nei Secrets!")
+            return False
+            
+        status.info("2. Connessione a Google...")
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
+        
+        # Gestione robusta del dizionario secrets
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
+        
+        status.info("3. Apertura Foglio di calcolo...")
         sheet = client.open_by_url(st.secrets["spreadsheet_url"]).sheet1
+        
+        status.info("4. Scrittura dati...")
         sheet.append_row(riga_dati)
+        
+        status.success("✅ Salvataggio completato!")
         return True
     except Exception as e:
-        st.error(f"Errore DB: {e}")
+        st.error("⚠️ ERRORE SALVATAGGIO CLOUD")
+        st.write("COPIA QUESTO CODICE DI ERRORE:")
+        st.code(traceback.format_exc())
         return False
 
-# --- EXCEL ---
+# --- EXCEL GENERATOR ---
 def generate_excel(cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi, sconto, totale_gen, costo_medio, note):
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {'in_memory': True})
@@ -145,7 +167,6 @@ def generate_excel(cliente, checkin, checkout, notti, ospiti, affitto_netto, pul
     worksheet.write('H2', pulizie, currency)
 
     col_idx = 8 
-    # Qui usiamo la lista completa per garantire che l'Excel abbia tutte le colonne, anche vuote
     for nome, _ in LISTA_SERVIZI:
         worksheet.merge_range(0, col_idx, 0, col_idx+3, nome.upper(), merge_format)
         worksheet.write(1, col_idx, "€ Unit", bold)
@@ -153,7 +174,6 @@ def generate_excel(cliente, checkin, checkout, notti, ospiti, affitto_netto, pul
         worksheet.write(1, col_idx+2, "Qta", bold)
         worksheet.write(1, col_idx+3, "Totale", bold)
         
-        # Recuperiamo i dati se esistono, altrimenti 0
         if nome in dettagli_servizi:
             dati = dettagli_servizi[nome]
             worksheet.write(2, col_idx, dati['p_unit'], currency)
@@ -165,7 +185,6 @@ def generate_excel(cliente, checkin, checkout, notti, ospiti, affitto_netto, pul
             worksheet.write(2, col_idx+1, 0, normal)
             worksheet.write(2, col_idx+2, 0, normal)
             worksheet.write(2, col_idx+3, 0, currency)
-            
         col_idx += 4 
 
     col_idx += 1
@@ -210,7 +229,6 @@ descrizione_servizi_txt = []
 for nome, prezzo_def in LISTA_SERVIZI:
     with st.expander(f"{nome}"):
         
-        # --- LOGICA VISIVA (Cosa vede l'utente) ---
         if "Wedding" in nome:
             c1, c2 = st.columns(2)
             p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
@@ -226,20 +244,16 @@ for nome, prezzo_def in LISTA_SERVIZI:
             pax = 1
             qta = 1
         elif "Transfer" in nome or "Extra Cleaning" in nome:
-            # NO PAX INPUT
             c1, c2 = st.columns(2)
             p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
-            # Pax fissato a 1 nel backend, ma non visibile qui
             pax = 1 
             qta = c2.number_input(f"Quantità/Volte", min_value=0, value=0, key=f"q_{nome}")
         else:
-            # Standard
             c1, c2, c3 = st.columns(3)
             p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
             pax = c2.number_input(f"Pax", min_value=0, value=0, key=f"x_{nome}")
             qta = c3.number_input(f"Qta", min_value=0, value=0, key=f"q_{nome}")
         
-        # --- LOGICA CALCOLO ---
         condizione_attiva = False
         if "Prima Spesa" in nome and p_unit > 0: condizione_attiva = True
         elif p_unit > 0 and pax > 0 and qta > 0: condizione_attiva = True
@@ -249,7 +263,6 @@ for nome, prezzo_def in LISTA_SERVIZI:
             totale_servizi += sub
             dettagli_servizi_excel[nome] = {'p_unit': p_unit, 'pax': pax, 'qta': qta, 'subtotale': sub}
             
-            # Testo anteprima
             if "Wedding" in nome: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {pax} = €{sub:.2f}")
             elif "Prima Spesa" in nome: descrizione_servizi_txt.append(f"{nome}: €{sub:.2f}")
             elif "Transfer" in nome or "Extra Cleaning" in nome: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {qta} = €{sub:.2f}")
@@ -281,22 +294,19 @@ if st.button("CALCOLA, SALVA SU CLOUD E SCARICA", type="primary", use_container_
             
             st.success(f"✅ TOTALE: € {totale_gen:,.2f}")
             
-            # --- SALVATAGGIO SU GOOGLE SHEETS (FULL DATA) ---
-            # 1. Base
+            # --- DATA PREP PER GOOGLE SHEETS ---
             riga_db = [
                 str(datetime.date.today()), cliente, str(checkin), str(checkout), notti, ospiti, affitto_netto, pulizie
             ]
             
-            # 2. Servizi (Ciclo Completo)
+            # Loop per garantire l'allineamento con le 60 colonne
             for s_nome, _ in LISTA_SERVIZI:
                 if s_nome in dettagli_servizi_excel:
                     dati = dettagli_servizi_excel[s_nome]
                     riga_db.extend([dati['p_unit'], dati['pax'], dati['qta'], dati['subtotale']])
                 else:
-                    # Se non usato, riempiamo con 0 per mantenere l'allineamento colonne
                     riga_db.extend([0, 0, 0, 0])
             
-            # 3. Finali
             riga_db.extend([sconto, totale_gen, costo_medio_notte, note])
             
             if salva_su_google_sheets(riga_db):
