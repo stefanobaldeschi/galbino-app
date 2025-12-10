@@ -326,3 +326,4 @@ if st.button("CALCOLA, SALVA SU CLOUD E SCARICA", type="primary", use_container_
 
             excel_data = generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi_excel, sconto, totale_gen, costo_medio_notte, note)
             st.download_button(label="📥 Scarica Excel (.xlsx)", data=excel_data, file_name=f"Prev_{cliente}_{datetime.date.today()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
