@@ -9,10 +9,9 @@ from icalendar import Calendar
 st.set_page_config(page_title="Preventivi Galbino", page_icon="🏰", layout="wide")
 
 # --- 0. CALENDARIO LODGIFY ---
-# Link inserito
 LODGIFY_ICAL_URL = "https://www.lodgify.com/5bab045e-30ec-4edf-aabf-970d352e7549.ics"
 
-# --- 1. CONFIGURAZIONE DATI ---
+# --- 1. DATI ---
 LISTA_SERVIZI = [
     ("Wedding Fee", 30), 
     ("Breakfast", 20),
@@ -38,7 +37,7 @@ COSTO_EXTRA_PAX = 100
 SCONTO_LUNGA_DURATA = 0.15
 MIN_STAY = 3
 
-# --- FUNZIONI MATEMATICHE ---
+# --- FUNZIONI UTILI ---
 def calcola_pasqua(anno):
     a, b, c = anno % 19, anno // 100, anno % 100
     d, e = b // 4, b % 4
@@ -70,7 +69,6 @@ def get_stagione(data):
     inizio_media_3 = datetime.date(anno, 9, 1)
     primo_ott = datetime.date(anno, 10, 1)
     terza_dom_ott = primo_ott + datetime.timedelta(days=(6 - primo_ott.weekday()) % 7) + datetime.timedelta(days=14)
-    
     if (inizio_media_1 <= data < inizio_alta) or (ultimo_lun_luglio <= data <= fine_media_2) or (inizio_media_3 <= data <= terza_dom_ott): return "Media"
     return "Bassa"
 
@@ -87,59 +85,73 @@ def calcola_soggiorno(data_arrivo, notti, ospiti):
         log.append(f"{giorno.strftime('%d/%m')}: €{prezzo}")
     return tot, log
 
-# --- FUNZIONE CONTROLLO DISPONIBILITÀ (ICAL) ---
+# --- FUNZIONE CALENDARIO POTENZIATA ---
 def check_availability(checkin, checkout, url):
-    if not url: return None, "Nessun calendario collegato"
+    if not url: return None, "Link mancante", []
+    
+    # 1. TRAVESTIMENTO DA BROWSER (User-Agent)
+    # Questo inganna Lodgify facendogli credere che siamo un Mac con Chrome
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"
+    }
+
+    prenotazioni_trovate = []
     
     try:
-        # Scarica il file .ics da Lodgify
-        r = requests.get(url)
-        r.raise_for_status() # Controlla se il link funziona
+        r = requests.get(url, headers=headers) # Aggiunto headers
+        r.raise_for_status()
+        
+        # Parsing del file
         cal = Calendar.from_ical(r.content)
         
-        # Converte le date input in datetime per il confronto
-        checkin_dt = datetime.datetime.combine(checkin, datetime.time.min)
-        # Nota: Lodgify spesso salva il checkout come la mattina dopo. 
-        # Noi controlliamo se la notte è occupata.
+        # Date di controllo
+        checkin_dt = checkin
+        checkout_dt = checkout
         
+        is_occupied = False
+        msg_occupato = ""
+
         for component in cal.walk():
             if component.name == "VEVENT":
-                # Data inizio e fine prenotazione esistente
+                # Estrai date evento
                 dtstart = component.get('dtstart').dt
                 dtend = component.get('dtend').dt
+                summary = str(component.get('summary', 'Prenotazione'))
                 
-                # Normalizzazione (a volte sono date, a volte datetime)
+                # Normalizza a date pure (senza orario)
                 if isinstance(dtstart, datetime.datetime): dtstart = dtstart.date()
                 if isinstance(dtend, datetime.datetime): dtend = dtend.date()
                 
-                # LOGICA SOVRAPPOSIZIONE
-                # Una data è occupata se l'intervallo richiesto si sovrappone a uno esistente
+                # Aggiungi alla lista per debug (solo future)
+                if dtend >= datetime.date.today():
+                    prenotazioni_trovate.append(f"{dtstart.strftime('%d/%m')} - {dtend.strftime('%d/%m')} ({summary})")
+                
+                # Logica sovrapposizione
                 # (NuovoInizio < VecchiaFine) AND (NuovaFine > VecchioInizio)
-                if (checkin < dtend) and (checkout > dtstart):
-                    return False, f"Occupato dal {dtstart.strftime('%d/%m')} al {dtend.strftime('%d/%m')}"
-                    
-        return True, "Date Libere"
+                if (checkin_dt < dtend) and (checkout_dt > dtstart):
+                    is_occupied = True
+                    msg_occupato = f"Occupato: {dtstart.strftime('%d/%m')} - {dtend.strftime('%d/%m')}"
+        
+        if is_occupied:
+            return False, msg_occupato, prenotazioni_trovate
+        else:
+            return True, "Libero", prenotazioni_trovate
         
     except Exception as e:
-        return None, f"Errore lettura calendario: {e}"
+        return None, f"Errore: {e}", []
 
-# --- GENERAZIONE EXCEL ---
+# --- EXCEL ---
 def generate_excel(cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi, sconto, totale_gen, note):
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {'in_memory': True})
     worksheet = workbook.add_worksheet("Preventivo")
-
-    # Stili
     bold = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'bg_color': '#D3D3D3'})
     merge_format = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#FFD700'}) 
     currency = workbook.add_format({'num_format': '€ #,##0.00', 'border': 1})
     normal = workbook.add_format({'border': 1, 'align': 'center'})
     
-    # Intestazioni
     general_headers = ["Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto Totale", "Pulizie"]
     worksheet.write_row('A1', general_headers, bold)
-    
-    # Dati
     worksheet.write('A2', datetime.date.today().strftime("%d/%m/%Y"), normal)
     worksheet.write('B2', cliente, normal)
     worksheet.write('C2', checkin.strftime("%d/%m/%Y"), normal)
@@ -149,7 +161,6 @@ def generate_excel(cliente, checkin, checkout, notti, ospiti, affitto_netto, pul
     worksheet.write('G2', affitto_netto, currency)
     worksheet.write('H2', pulizie, currency)
 
-    # Dettagli
     col_idx = 8 
     for nome_servizio, dati in dettagli_servizi.items():
         worksheet.merge_range(0, col_idx, 0, col_idx+3, nome_servizio.upper(), merge_format)
@@ -157,14 +168,12 @@ def generate_excel(cliente, checkin, checkout, notti, ospiti, affitto_netto, pul
         worksheet.write(1, col_idx+1, "Pax", bold)
         worksheet.write(1, col_idx+2, "Qta", bold)
         worksheet.write(1, col_idx+3, "Totale", bold)
-        
         worksheet.write(2, col_idx, dati['p_unit'], currency)
         worksheet.write(2, col_idx+1, dati['pax'], normal)
         worksheet.write(2, col_idx+2, dati['qta'], normal)
         worksheet.write(2, col_idx+3, dati['subtotale'], currency)
         col_idx += 4 
 
-    # Totali
     col_idx += 1
     worksheet.write(0, col_idx, "SCONTO", bold)
     worksheet.write(2, col_idx, sconto, currency)
@@ -172,47 +181,54 @@ def generate_excel(cliente, checkin, checkout, notti, ospiti, affitto_netto, pul
     worksheet.write(2, col_idx+1, totale_gen, currency)
     worksheet.write(0, col_idx+2, "NOTE", bold)
     worksheet.write(2, col_idx+2, note, normal)
-
     workbook.close()
     return output.getvalue()
 
-# --- CALLBACK CALENDARIO ---
 def aggiorna_date():
     if 'data_in' in st.session_state:
         st.session_state.data_out = st.session_state.data_in + datetime.timedelta(days=MIN_STAY)
 
-# --- INTERFACCIA WEB ---
+# --- INTERFACCIA ---
 st.title("🏰 Castello di Galbino")
 
-# 1. INPUT
+# SIDEBAR PER DEBUG (Vedi se legge il calendario)
+with st.sidebar:
+    st.header("🔍 Controllo Calendario")
+    if LODGIFY_ICAL_URL:
+        # Chiamata di controllo iniziale
+        _, _, lista_eventi = check_availability(datetime.date.today(), datetime.date.today(), LODGIFY_ICAL_URL)
+        if lista_eventi:
+            st.success(f"Connesso! Trovati {len(lista_eventi)} eventi futuri.")
+            with st.expander("Vedi date occupate"):
+                for ev in sorted(lista_eventi)[:10]: # Mostra solo i primi 10
+                    st.text(ev)
+        else:
+            st.warning("Nessun evento trovato o errore lettura.")
+    else:
+        st.error("Link mancante")
+
+# INPUT
 with st.container():
     st.markdown("### 📅 Dati Soggiorno")
     cliente = st.text_input("Nome Cliente")
     c1, c2, c3 = st.columns(3)
-    
-    with c1: 
-        checkin = st.date_input("Check-In", value=datetime.date.today(), key='data_in', on_change=aggiorna_date)
+    with c1: checkin = st.date_input("Check-In", value=datetime.date.today(), key='data_in', on_change=aggiorna_date)
     with c2: 
         default_out = datetime.date.today() + datetime.timedelta(days=MIN_STAY)
         if 'data_out' not in st.session_state: st.session_state.data_out = default_out
         checkout = st.date_input("Check-Out", key='data_out')
-    with c3: 
-        ospiti = st.number_input("Ospiti a Dormire", min_value=1, value=10)
+    with c3: ospiti = st.number_input("Ospiti a Dormire", min_value=1, value=10)
 
-# --- CONTROLLO DISPONIBILITÀ ---
-# Qui avviene la magia: chiamiamo la funzione check_availability
-is_free, msg = check_availability(checkin, checkout, LODGIFY_ICAL_URL)
-
+# DISPONIBILITÀ (Visuale Principale)
+is_free, msg, _ = check_availability(checkin, checkout, LODGIFY_ICAL_URL)
 if is_free is True:
     st.success(f"✅ DATE DISPONIBILI")
 elif is_free is False:
-    st.error(f"⛔ ATTENZIONE: {msg}")
+    st.error(f"⛔ {msg}")
 else:
-    # Se c'è un errore tecnico (es. link sbagliato)
-    st.warning(f"⚠️ Impossibile verificare calendario: {msg}")
+    st.warning(f"⚠️ Errore controllo: {msg}")
 
-
-# 2. SERVIZI
+# SERVIZI
 st.markdown("### 🍷 Servizi")
 dettagli_servizi_excel = {}
 totale_servizi = 0
@@ -248,26 +264,22 @@ for nome, prezzo_def in LISTA_SERVIZI:
             sub = p_unit * pax * qta
             totale_servizi += sub
             dettagli_servizi_excel[nome] = {'p_unit': p_unit, 'pax': pax, 'qta': qta, 'subtotale': sub}
-            
             if "Wedding" in nome: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {pax} = €{sub:.2f}")
             elif "Prima Spesa" in nome: descrizione_servizi_txt.append(f"{nome}: €{sub:.2f}")
             else: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {pax} x {qta} = €{sub:.2f}")
 
-# 3. FOOTER
+# FOOTER E CALCOLO
 st.divider()
 c_f1, c_f2 = st.columns(2)
 with c_f1: sconto = st.number_input("Sconto Manuale (€)", min_value=0.0, step=50.0)
 with c_f2: note = st.text_area("Note interne")
 
-# 4. CALCOLO
 if st.button("CALCOLA E GENERA EXCEL", type="primary", use_container_width=True):
     notti = (checkout - checkin).days
-    
     if notti < MIN_STAY: st.error(f"⚠️ Minimo {MIN_STAY} notti.")
     elif notti <= 0: st.error("⚠️ Date non valide.")
     else:
         costo_affitto, log_affitto = calcola_soggiorno(checkin, notti, ospiti)
-        
         if costo_affitto is None: st.error(f"❌ {log_affitto}")
         else:
             affitto_netto = costo_affitto
@@ -287,15 +299,5 @@ if st.button("CALCOLA E GENERA EXCEL", type="primary", use_container_width=True)
                 for riga in descrizione_servizi_txt: st.write(f"- {riga}")
                 if sconto > 0: st.write(f"- Sconto: -€{sconto:.2f}")
 
-            excel_data = generate_excel(
-                cliente, checkin, checkout, notti, ospiti, 
-                affitto_netto, pulizie, dettagli_servizi_excel, sconto, totale_gen, note
-            )
-            
-            st.download_button(
-                label="📥 Scarica Excel (.xlsx)",
-                data=excel_data,
-                file_name=f"Prev_{cliente}_{datetime.date.today()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+            excel_data = generate_excel(cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi_excel, sconto, totale_gen, note)
+            st.download_button(label="📥 Scarica Excel (.xlsx)", data=excel_data, file_name=f"Prev_{cliente}_{datetime.date.today()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
