@@ -2,3 +2,5 @@ streamlit
 xlsxwriter
 requests
 icalendar
+gspread
+oauth2client
