@@ -318,4 +318,107 @@ for nome, prezzo_def in LISTA_SERVIZI:
             c1, c2 = st.columns(2)
             p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
             pax = 1 
-            qta = c2.number_input(f"Quantità/Volte", min_value
+            qta = c2.number_input(f"Quantità/Volte", min_value=0, value=0, key=f"q_{nome}")
+        else:
+            c1, c2, c3 = st.columns(3)
+            p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
+            pax = c2.number_input(f"Pax", min_value=0, value=0, key=f"x_{nome}")
+            qta = c3.number_input(f"Qta", min_value=0, value=0, key=f"q_{nome}")
+        
+        condizione_attiva = False
+        if "Prima Spesa" in nome and p_unit > 0: condizione_attiva = True
+        elif p_unit > 0 and pax > 0 and qta > 0: condizione_attiva = True
+            
+        if condizione_attiva:
+            sub = p_unit * pax * qta
+            totale_servizi += sub
+            dettagli_servizi_excel[nome] = {'p_unit': p_unit, 'pax': pax, 'qta': qta, 'subtotale': sub}
+            
+            if "Wedding" in nome: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {pax} = €{sub:.2f}")
+            elif "Prima Spesa" in nome: descrizione_servizi_txt.append(f"{nome}: €{sub:.2f}")
+            elif "Transfer" in nome or "Extra Cleaning" in nome: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {qta} = €{sub:.2f}")
+            else: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {pax} x {qta} = €{sub:.2f}")
+
+st.divider()
+c_f1, c_f2 = st.columns(2)
+with c_f1: sconto = st.number_input("Sconto Manuale (€)", min_value=0.0, step=50.0)
+with c_f2: note = st.text_area("Note interne")
+
+# --- BOTTONE PRINCIPALE ---
+if st.button("CALCOLA, SALVA SU CLOUD E SCARICA", type="primary", use_container_width=True):
+    notti = (checkout - checkin).days
+    
+    if autore == "Seleziona...":
+        st.error("⚠️ ATTENZIONE: Devi selezionare chi sta facendo il preventivo (Luca o Stefano)!")
+    elif notti < MIN_STAY: 
+        st.error(f"⚠️ Minimo {MIN_STAY} notti.")
+    elif notti <= 0: 
+        st.error("⚠️ Date non valide.")
+    else:
+        costo_affitto, log_affitto = calcola_soggiorno(checkin, notti, ospiti)
+        if costo_affitto is None: st.error(f"❌ {log_affitto}")
+        else:
+            affitto_netto = costo_affitto
+            desc_affitto = f"Affitto {notti} notti"
+            if notti >= 7:
+                sconto_long = costo_affitto * SCONTO_LUNGA_DURATA
+                affitto_netto = costo_affitto - sconto_long
+                desc_affitto += " (-15%)"
+            
+            pulizie = 600
+            totale_gen = affitto_netto + pulizie + totale_servizi - sconto
+            costo_medio_notte = affitto_netto / notti
+            
+            st.success(f"✅ TOTALE: € {totale_gen:,.2f}")
+            
+            # --- SALVATAGGIO SU GOOGLE SHEETS ---
+            riga_db = [
+                autore,
+                datetime.date.today().strftime("%d/%m/%Y"), 
+                cliente,
+                checkin.strftime("%d/%m/%Y"), 
+                checkout.strftime("%d/%m/%Y"), 
+                notti, ospiti, affitto_netto, 
+                costo_medio_notte, 
+                pulizie
+            ]
+            
+            for s_nome, _ in LISTA_SERVIZI:
+                if s_nome in dettagli_servizi_excel:
+                    dati = dettagli_servizi_excel[s_nome]
+                    riga_db.extend([dati['p_unit'], dati['pax'], dati['qta'], dati['subtotale']])
+                else:
+                    riga_db.extend([0, 0, 0, 0])
+            
+            riga_db.extend([sconto, totale_gen, note]) 
+            
+            if salva_su_google_sheets(riga_db):
+                st.toast("☁️ Salvato nel Database!", icon="✅")
+            
+            with st.expander("Dettagli Rapidi", expanded=True):
+                st.write(f"- {desc_affitto}: €{affitto_netto:.2f}")
+                st.write(f"- Pulizie: €{pulizie:.2f}")
+                for riga in descrizione_servizi_txt: st.write(f"- {riga}")
+                if sconto > 0: st.write(f"- Sconto: -€{sconto:.2f}")
+                st.write("---")
+                st.write(f"🌙 **Media Affitto a notte:** €{costo_medio_notte:,.2f}")
+
+            excel_data = generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi_excel, sconto, totale_gen, costo_medio_notte, note)
+            st.download_button(label="📥 Scarica Excel Preventivo (.xlsx)", data=excel_data, file_name=f"Prev_{cliente}_{datetime.date.today()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+# --- AREA AMMINISTRAZIONE ---
+st.divider()
+with st.expander("🗄️ Area Amministrazione (Scarica Database)"):
+    st.info("Scarica tutto lo storico dei preventivi salvati nel database Google, formattato in Excel professionale.")
+    if st.button("📥 SCARICA INTERO DATABASE"):
+        with st.spinner("Generazione Report Completo in corso..."):
+            full_db_data = download_full_db_excel()
+            if full_db_data:
+                st.download_button(
+                    label="💾 Clicca per Salvare Report Completo",
+                    data=full_db_data,
+                    file_name=f"Report_Galbino_{datetime.date.today()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.error("Errore nel download o Database vuoto.")
