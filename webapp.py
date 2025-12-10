@@ -125,7 +125,7 @@ def salva_su_google_sheets(riga_dati):
         st.code(traceback.format_exc())
         return False
 
-# --- EXCEL GENERATOR ---
+# --- EXCEL GENERATOR (Aggiornato Ordine Colonne) ---
 def generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi, sconto, totale_gen, costo_medio, note):
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {'in_memory': True})
@@ -135,11 +135,11 @@ def generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_ne
     currency = workbook.add_format({'num_format': '€ #,##0.00', 'border': 1})
     normal = workbook.add_format({'border': 1, 'align': 'center'})
     
-    # Formato Date Italiano
-    general_headers = ["Autore", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto Totale", "Pulizie"]
+    # Intestazioni 
+    general_headers = ["Autore", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto", "Media Affitto/Notte", "Pulizie"]
     worksheet.write_row('A1', general_headers, bold)
     
-    # Scrittura date formattate
+    # Valori
     worksheet.write('A2', autore, normal)
     worksheet.write('B2', datetime.date.today().strftime("%d/%m/%Y"), normal)
     worksheet.write('C2', cliente, normal)
@@ -148,9 +148,11 @@ def generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_ne
     worksheet.write('F2', notti, normal)
     worksheet.write('G2', ospiti, normal)
     worksheet.write('H2', affitto_netto, currency)
-    worksheet.write('I2', pulizie, currency)
+    worksheet.write('I2', costo_medio, currency) 
+    worksheet.write('J2', pulizie, currency)     
 
-    col_idx = 9 
+    # I servizi ora partono dalla colonna K (indice 10)
+    col_idx = 10 
     for nome, _ in LISTA_SERVIZI:
         worksheet.merge_range(0, col_idx, 0, col_idx+3, nome.upper(), merge_format)
         worksheet.write(1, col_idx, "€ Unit", bold)
@@ -176,10 +178,9 @@ def generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_ne
     worksheet.write(2, col_idx, sconto, currency)
     worksheet.write(0, col_idx+1, "TOTALE PREVENTIVO", bold)
     worksheet.write(2, col_idx+1, totale_gen, currency)
-    worksheet.write(0, col_idx+2, "MEDIA AFFITTO/NOTTE", bold)
-    worksheet.write(2, col_idx+2, costo_medio, currency)
-    worksheet.write(0, col_idx+3, "NOTE", bold)
-    worksheet.write(2, col_idx+3, note, normal)
+    # Media Affitto rimossa da qui perché spostata all'inizio
+    worksheet.write(0, col_idx+2, "NOTE", bold)
+    worksheet.write(2, col_idx+2, note, normal)
     workbook.close()
     return output.getvalue()
 
@@ -199,7 +200,6 @@ with st.container():
         cliente = st.text_input("Nome Cliente")
     
     c1, c2, c3 = st.columns(3)
-    # FORMATO ITALIANO NELL'INPUT (DD/MM/YYYY)
     with c1: 
         checkin = st.date_input("Check-In", value=datetime.date.today(), key='data_in', on_change=aggiorna_date, format="DD/MM/YYYY")
     with c2: 
@@ -210,115 +210,4 @@ with st.container():
         ospiti = st.number_input("Ospiti a Dormire", min_value=1, value=10)
 
 is_free, msg = check_availability(checkin, checkout, LODGIFY_ICAL_URL)
-if is_free is True: st.success(f"✅ DATE DISPONIBILI")
-elif is_free is False: st.error(f"⛔ {msg}")
-else: st.warning(f"⚠️ Errore controllo: {msg}")
-
-st.markdown("### 🍷 Servizi")
-dettagli_servizi_excel = {}
-totale_servizi = 0
-descrizione_servizi_txt = [] 
-
-for nome, prezzo_def in LISTA_SERVIZI:
-    with st.expander(f"{nome}"):
-        
-        if "Wedding" in nome:
-            c1, c2 = st.columns(2)
-            p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
-            pax = c2.number_input("Invitati", min_value=0, value=0, key=f"x_{nome}")
-            qta = 1 
-        elif "Truffle" in nome:
-            c1, c2 = st.columns(2)
-            p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
-            pax = c2.number_input("Partecipanti", min_value=0, value=0, key=f"x_{nome}")
-            qta = 1
-        elif "Prima Spesa" in nome:
-            p_unit = st.number_input(f"Costo Scontrino", value=0.0, key=f"p_{nome}")
-            pax = 1
-            qta = 1
-        elif "Transfer" in nome or "Extra Cleaning" in nome:
-            c1, c2 = st.columns(2)
-            p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
-            pax = 1 
-            qta = c2.number_input(f"Quantità/Volte", min_value=0, value=0, key=f"q_{nome}")
-        else:
-            c1, c2, c3 = st.columns(3)
-            p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
-            pax = c2.number_input(f"Pax", min_value=0, value=0, key=f"x_{nome}")
-            qta = c3.number_input(f"Qta", min_value=0, value=0, key=f"q_{nome}")
-        
-        condizione_attiva = False
-        if "Prima Spesa" in nome and p_unit > 0: condizione_attiva = True
-        elif p_unit > 0 and pax > 0 and qta > 0: condizione_attiva = True
-            
-        if condizione_attiva:
-            sub = p_unit * pax * qta
-            totale_servizi += sub
-            dettagli_servizi_excel[nome] = {'p_unit': p_unit, 'pax': pax, 'qta': qta, 'subtotale': sub}
-            
-            if "Wedding" in nome: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {pax} = €{sub:.2f}")
-            elif "Prima Spesa" in nome: descrizione_servizi_txt.append(f"{nome}: €{sub:.2f}")
-            elif "Transfer" in nome or "Extra Cleaning" in nome: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {qta} = €{sub:.2f}")
-            else: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {pax} x {qta} = €{sub:.2f}")
-
-st.divider()
-c_f1, c_f2 = st.columns(2)
-with c_f1: sconto = st.number_input("Sconto Manuale (€)", min_value=0.0, step=50.0)
-with c_f2: note = st.text_area("Note interne")
-
-if st.button("CALCOLA, SALVA SU CLOUD E SCARICA", type="primary", use_container_width=True):
-    if autore == "Seleziona...":
-        st.error("⚠️ ATTENZIONE: Devi selezionare chi sta facendo il preventivo (Luca o Stefano)!")
-    elif notti < MIN_STAY: 
-        st.error(f"⚠️ Minimo {MIN_STAY} notti.")
-    elif notti <= 0: 
-        st.error("⚠️ Date non valide.")
-    else:
-        costo_affitto, log_affitto = calcola_soggiorno(checkin, notti, ospiti)
-        if costo_affitto is None: st.error(f"❌ {log_affitto}")
-        else:
-            affitto_netto = costo_affitto
-            desc_affitto = f"Affitto {notti} notti"
-            if notti >= 7:
-                sconto_long = costo_affitto * SCONTO_LUNGA_DURATA
-                affitto_netto = costo_affitto - sconto_long
-                desc_affitto += " (-15%)"
-            
-            pulizie = 600
-            totale_gen = affitto_netto + pulizie + totale_servizi - sconto
-            costo_medio_notte = affitto_netto / notti
-            
-            st.success(f"✅ TOTALE: € {totale_gen:,.2f}")
-            
-            # --- SALVATAGGIO SU GOOGLE SHEETS (Con formato Date IT) ---
-            riga_db = [
-                autore,
-                datetime.date.today().strftime("%d/%m/%Y"), # Oggi
-                cliente,
-                checkin.strftime("%d/%m/%Y"), # CheckIn
-                checkout.strftime("%d/%m/%Y"), # CheckOut
-                notti, ospiti, affitto_netto, pulizie
-            ]
-            
-            for s_nome, _ in LISTA_SERVIZI:
-                if s_nome in dettagli_servizi_excel:
-                    dati = dettagli_servizi_excel[s_nome]
-                    riga_db.extend([dati['p_unit'], dati['pax'], dati['qta'], dati['subtotale']])
-                else:
-                    riga_db.extend([0, 0, 0, 0])
-            
-            riga_db.extend([sconto, totale_gen, costo_medio_notte, note])
-            
-            if salva_su_google_sheets(riga_db):
-                st.toast("☁️ Salvato nel Database!", icon="✅")
-            
-            with st.expander("Dettagli Rapidi", expanded=True):
-                st.write(f"- {desc_affitto}: €{affitto_netto:.2f}")
-                st.write(f"- Pulizie: €{pulizie:.2f}")
-                for riga in descrizione_servizi_txt: st.write(f"- {riga}")
-                if sconto > 0: st.write(f"- Sconto: -€{sconto:.2f}")
-                st.write("---")
-                st.write(f"🌙 **Media Affitto a notte:** €{costo_medio_notte:,.2f}")
-
-            excel_data = generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi_excel, sconto, totale_gen, costo_medio_notte, note)
-            st.download_button(label="📥 Scarica Excel (.xlsx)", data=excel_data, file_name=f"Prev_{cliente}_{datetime.date.today()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+if is_free is
