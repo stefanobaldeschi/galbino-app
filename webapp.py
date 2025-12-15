@@ -30,7 +30,7 @@ LISTA_SERVIZI = [
     ("Extra Cleaning", 200)
 ]
 
-# PREZZI NETTI (Prezzo Originale - 15% Commissione)
+# PREZZI NETTI BASE (Tuoi, puliti)
 RATES = {
     "Alta": {"Base": 1700, "We": 2635, "CapienzaBase": 16, "Max": 24},
     "Media": {"Base": 1275, "We": 1870, "CapienzaBase": 16, "Max": 24},
@@ -74,7 +74,7 @@ def get_stagione(data):
     if (inizio_media_1 <= data < inizio_alta) or (ultimo_lun_luglio <= data <= fine_media_2) or (inizio_media_3 <= data <= terza_dom_ott): return "Media"
     return "Bassa"
 
-def calcola_soggiorno(data_arrivo, notti, ospiti):
+def calcola_soggiorno_netto(data_arrivo, notti, ospiti):
     tot, log = 0, []
     for i in range(notti):
         giorno = data_arrivo + datetime.timedelta(days=i)
@@ -132,19 +132,20 @@ def download_full_db_excel():
         client = gspread.authorize(creds)
         sheet = client.open_by_url(st.secrets["spreadsheet_url"]).sheet1
         data = sheet.get_all_values()
-        
         if len(data) < 2: return None
 
         output = io.BytesIO()
         workbook = xlsxwriter.Workbook(output, {'in_memory': True})
         worksheet = workbook.add_worksheet("Database Completo")
         
+        # Stili
         fmt_header_grey = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#EFEFEF', 'font_size': 11})
         fmt_header_gold = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#FFD700', 'font_size': 11})
         fmt_subheader = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'font_size': 9, 'bg_color': '#FFF8DC'})
         fmt_currency = workbook.add_format({'num_format': '#,##0.00 €', 'border': 1, 'align': 'center'})
         fmt_normal = workbook.add_format({'border': 1, 'align': 'center'})
         
+        # Autofit
         col_widths = {}
         for row in data:
             for i, cell_value in enumerate(row):
@@ -154,10 +155,11 @@ def download_full_db_excel():
             final_width = max(10, min(width + 2, 60))
             worksheet.set_column(col_idx, col_idx, final_width)
 
-        headers_gen = ["Autore", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto", "Media/Notte", "Pulizie"]
+        # Intestazioni (AGGIUNTO CANALE)
+        headers_gen = ["Autore", "Canale", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto", "Media/Notte", "Pulizie"]
         for i, h in enumerate(headers_gen): worksheet.merge_range(0, i, 1, i, h, fmt_header_grey)
             
-        col_idx = 10 
+        col_idx = 11 # Spostato di 1 per colonna Canale
         for nome, _ in LISTA_SERVIZI:
             worksheet.merge_range(0, col_idx, 0, col_idx+3, nome.upper(), fmt_header_gold)
             worksheet.write(1, col_idx, "€ Unit", fmt_subheader)
@@ -175,14 +177,17 @@ def download_full_db_excel():
         for row_num, row_data in enumerate(raw_rows):
             excel_row = row_num + 2
             try:
-                for c in range(7): worksheet.write(excel_row, c, row_data[c], fmt_normal)
-                to_float = lambda x: float(str(x).replace(',', '.').replace('€', '').strip()) if x and x != '0' else 0.0
-                worksheet.write(excel_row, 7, to_float(row_data[7]), fmt_currency) 
-                worksheet.write(excel_row, 8, to_float(row_data[8]), fmt_currency) 
-                worksheet.write(excel_row, 9, to_float(row_data[9]), fmt_currency) 
+                # Colonne 0-7 (Testo/Numeri semplici) incluse Autore e Canale
+                for c in range(8): worksheet.write(excel_row, c, row_data[c], fmt_normal)
                 
-                current_col_idx = 10
-                db_service_start_idx = 10
+                to_float = lambda x: float(str(x).replace(',', '.').replace('€', '').strip()) if x and x != '0' else 0.0
+                
+                worksheet.write(excel_row, 8, to_float(row_data[8]), fmt_currency) # Affitto
+                worksheet.write(excel_row, 9, to_float(row_data[9]), fmt_currency) # Media
+                worksheet.write(excel_row, 10, to_float(row_data[10]), fmt_currency) # Pulizie
+                
+                current_col_idx = 11
+                db_service_start_idx = 11
                 for _ in LISTA_SERVIZI:
                     worksheet.write(excel_row, current_col_idx, to_float(row_data[db_service_start_idx]), fmt_currency)
                     worksheet.write(excel_row, current_col_idx+1, row_data[db_service_start_idx+1], fmt_normal)
@@ -202,7 +207,7 @@ def download_full_db_excel():
     except Exception: return None
 
 # --- EXCEL GENERATOR (Preventivo Singolo) ---
-def generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi, sconto, totale_gen, costo_medio, note):
+def generate_excel(autore, canale, cliente, checkin, checkout, notti, ospiti, affitto_finale, pulizie, dettagli_servizi, sconto, totale_gen, costo_medio, note):
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {'in_memory': True})
     worksheet = workbook.add_worksheet("Preventivo")
@@ -211,13 +216,16 @@ def generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_ne
     currency = workbook.add_format({'num_format': '#,##0.00 €', 'border': 1, 'align': 'center'})
     normal = workbook.add_format({'border': 1, 'align': 'center'})
     
-    worksheet.set_column('A:A', 15)
-    worksheet.set_column('B:B', 12)
-    worksheet.set_column('C:C', 30)
-    worksheet.set_column('D:E', 13)
-    worksheet.set_column('F:G', 8)
-    worksheet.set_column('H:J', 16)
-    start_col = 10
+    # Setup Larghezze
+    worksheet.set_column('A:A', 15) # Autore
+    worksheet.set_column('B:B', 15) # Canale (Nuovo)
+    worksheet.set_column('C:C', 12) # Data
+    worksheet.set_column('D:D', 30) # Cliente
+    worksheet.set_column('E:F', 13) # Date
+    worksheet.set_column('G:H', 8)  # Notti/Ospiti
+    worksheet.set_column('I:K', 16) # Costi
+    
+    start_col = 11
     for _ in LISTA_SERVIZI:
         worksheet.set_column(start_col, start_col, 14)
         worksheet.set_column(start_col+1, start_col+2, 6)
@@ -226,21 +234,23 @@ def generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_ne
     worksheet.set_column(start_col+1, start_col+2, 18)
     worksheet.set_column(start_col+3, start_col+3, 50)
 
-    general_headers = ["Autore", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto", "Media Affitto/Notte", "Pulizie"]
+    # Header
+    general_headers = ["Autore", "Canale", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto", "Media/Notte", "Pulizie"]
     worksheet.write_row('A1', general_headers, bold)
     
     worksheet.write('A2', autore, normal)
-    worksheet.write('B2', datetime.date.today().strftime("%d/%m/%Y"), normal)
-    worksheet.write('C2', cliente, normal)
-    worksheet.write('D2', checkin.strftime("%d/%m/%Y"), normal)
-    worksheet.write('E2', checkout.strftime("%d/%m/%Y"), normal)
-    worksheet.write('F2', notti, normal)
-    worksheet.write('G2', ospiti, normal)
-    worksheet.write('H2', affitto_netto, currency)
-    worksheet.write('I2', costo_medio, currency) 
-    worksheet.write('J2', pulizie, currency)     
+    worksheet.write('B2', canale, normal)
+    worksheet.write('C2', datetime.date.today().strftime("%d/%m/%Y"), normal)
+    worksheet.write('D2', cliente, normal)
+    worksheet.write('E2', checkin.strftime("%d/%m/%Y"), normal)
+    worksheet.write('F2', checkout.strftime("%d/%m/%Y"), normal)
+    worksheet.write('G2', notti, normal)
+    worksheet.write('H2', ospiti, normal)
+    worksheet.write('I2', affitto_finale, currency)
+    worksheet.write('J2', costo_medio, currency) 
+    worksheet.write('K2', pulizie, currency)     
 
-    col_idx = 10 
+    col_idx = 11 
     for nome, _ in LISTA_SERVIZI:
         worksheet.merge_range(0, col_idx, 0, col_idx+3, nome.upper(), merge_format)
         worksheet.write(1, col_idx, "€ Unit", bold)
@@ -280,44 +290,56 @@ st.title("🏰 Castello di Galbino")
 with st.container():
     st.markdown("### 📅 Dati Soggiorno")
     
-    c_aut, c_cli = st.columns([1, 3])
+    # --- RIGA 1: Autore, Canale, Cliente ---
+    c_aut, c_can, c_cli = st.columns([1, 1, 2])
     with c_aut:
-        autore = st.selectbox("Autore Preventivo", ["Seleziona...", "Luca", "Stefano"])
+        autore = st.selectbox("Autore", ["Seleziona...", "Luca", "Stefano"])
+    with c_can:
+        # SELETTORE MULTICANALE
+        canale = st.radio("Listino / Canale", ["Netto Galbino", "Airbnb (+15%)", "Oliver's (+20%)"], horizontal=True)
     with c_cli:
         cliente = st.text_input("Nome Cliente")
     
     c1, c2, c3 = st.columns(3)
-    with c1: 
-        checkin = st.date_input("Check-In", value=datetime.date.today(), key='data_in', on_change=aggiorna_date, format="DD/MM/YYYY")
+    with c1: checkin = st.date_input("Check-In", value=datetime.date.today(), key='data_in', on_change=aggiorna_date, format="DD/MM/YYYY")
     with c2: 
         default_out = datetime.date.today() + datetime.timedelta(days=MIN_STAY)
         if 'data_out' not in st.session_state: st.session_state.data_out = default_out
         checkout = st.date_input("Check-Out", key='data_out', format="DD/MM/YYYY")
-    with c3: 
-        ospiti = st.number_input("Ospiti a Dormire", min_value=1, value=10)
+    with c3: ospiti = st.number_input("Ospiti a Dormire", min_value=1, value=10)
 
 is_free, msg = check_availability(checkin, checkout, LODGIFY_ICAL_URL)
 if is_free is True: st.success(f"✅ DATE DISPONIBILI")
 elif is_free is False: st.error(f"⛔ {msg}")
 else: st.warning(f"⚠️ Errore controllo: {msg}")
 
-# --- CALCOLO LIVE ---
+# --- CALCOLO LIVE (NETTO) ---
 notti = (checkout - checkin).days
-costo_affitto = 0
-affitto_netto = 0
+costo_netto_base = 0
+affitto_calcolato = 0
 sconto_long = 0
 desc_affitto = ""
 log_affitto = ""
 
 if notti >= MIN_STAY and notti > 0:
-    costo_affitto, log_affitto = calcola_soggiorno(checkin, notti, ospiti)
-    if costo_affitto is not None:
-        affitto_netto = costo_affitto
+    costo_netto_base, log_affitto = calcola_soggiorno_netto(checkin, notti, ospiti)
+    if costo_netto_base is not None:
+        # Calcolo Sconto Lunga Durata (sul netto)
+        netto_scontato = costo_netto_base
         if notti >= 7:
-            sconto_long = costo_affitto * SCONTO_LUNGA_DURATA
-            affitto_netto = costo_affitto - sconto_long
+            sconto_long = costo_netto_base * SCONTO_LUNGA_DURATA
+            netto_scontato = costo_netto_base - sconto_long
+        
+        # APPLICAZIONE MARKUP CANALE (SCORPORO)
+        # Se voglio 100 Netto e Airbnb vuole 15%, Prezzo = 100 / (1 - 0.15)
+        if canale == "Airbnb (+15%)":
+            affitto_calcolato = netto_scontato / 0.85
+        elif canale == "Oliver's (+20%)":
+            affitto_calcolato = netto_scontato / 0.80
+        else:
+            affitto_calcolato = netto_scontato # Netto Galbino
 else:
-    affitto_netto = 0
+    affitto_calcolato = 0
 
 st.markdown("### 🍷 Servizi")
 dettagli_servizi_excel = {}
@@ -372,40 +394,38 @@ with c_f2: note = st.text_area("Note interne")
 
 # --- CALCOLO TOTALI ---
 pulizie = 600
-totale_gen = affitto_netto + pulizie + totale_servizi - sconto
+totale_gen = affitto_calcolato + pulizie + totale_servizi - sconto
 costo_medio_notte = 0
-if notti > 0: costo_medio_notte = affitto_netto / notti
+if notti > 0: costo_medio_notte = affitto_calcolato / notti
 
 # --- DISPLAY LIVE ---
 st.divider()
 st.markdown("### 💰 Preventivo Live")
 col_res1, col_res2, col_res3 = st.columns(3)
-col_res1.metric("Affitto (Netto)", f"€ {affitto_netto:,.2f}")
+col_res1.metric(f"Affitto ({canale})", f"€ {affitto_calcolato:,.2f}")
 col_res2.metric("Servizi Extra", f"€ {totale_servizi:,.2f}")
 col_res3.metric("TOTALE STIMATO", f"€ {totale_gen:,.2f}", delta_color="normal")
 
-# --- VALIDAZIONE PER BOTTONI ---
+# --- VALIDAZIONE ---
 is_valid = True
 if autore == "Seleziona...": is_valid = False
 elif notti < MIN_STAY: is_valid = False
-elif costo_affitto is None: is_valid = False
+elif costo_netto_base is None: is_valid = False
 
-# --- DUE COLONNE, DUE BOTTONI ---
+# --- BOTTONI AZIONE ---
 b1, b2 = st.columns(2)
 
 with b1:
-    # 1. SOLO SALVATAGGIO
     if st.button("☁️ SALVA SOLO SU CLOUD", use_container_width=True):
         if not is_valid:
             if autore == "Seleziona...": st.error("⚠️ Manca Autore!")
             elif notti < MIN_STAY: st.error(f"⚠️ Minimo {MIN_STAY} notti.")
             else: st.error(f"❌ {log_affitto}")
         else:
-            # Prepara dati
             riga_db = [
-                autore, datetime.date.today().strftime("%d/%m/%Y"), cliente,
+                autore, canale, datetime.date.today().strftime("%d/%m/%Y"), cliente,
                 checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), 
-                notti, ospiti, affitto_netto, costo_medio_notte, pulizie
+                notti, ospiti, affitto_calcolato, costo_medio_notte, pulizie
             ]
             for s_nome, _ in LISTA_SERVIZI:
                 if s_nome in dettagli_servizi_excel:
@@ -415,16 +435,14 @@ with b1:
             riga_db.extend([sconto, totale_gen, note])
             
             if salva_su_google_sheets(riga_db):
-                st.toast("✅ Salvato nel Database!", icon="☁️")
+                st.toast(f"✅ Preventivo {canale} Salvato!", icon="☁️")
 
 with b2:
-    # 2. SALVA E SCARICA (Callback Logic)
     if is_valid:
-        # Prepara dati per Callback
         riga_db_dl = [
-            autore, datetime.date.today().strftime("%d/%m/%Y"), cliente,
+            autore, canale, datetime.date.today().strftime("%d/%m/%Y"), cliente,
             checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), 
-            notti, ospiti, affitto_netto, costo_medio_notte, pulizie
+            notti, ospiti, affitto_calcolato, costo_medio_notte, pulizie
         ]
         for s_nome, _ in LISTA_SERVIZI:
             if s_nome in dettagli_servizi_excel:
@@ -433,10 +451,8 @@ with b2:
             else: riga_db_dl.extend([0, 0, 0, 0])
         riga_db_dl.extend([sconto, totale_gen, note])
 
-        # Prepara Excel
-        excel_data = generate_excel(autore, cliente, checkin, checkout, notti, ospiti, affitto_netto, pulizie, dettagli_servizi_excel, sconto, totale_gen, costo_medio_notte, note)
+        excel_data = generate_excel(autore, canale, cliente, checkin, checkout, notti, ospiti, affitto_calcolato, pulizie, dettagli_servizi_excel, sconto, totale_gen, costo_medio_notte, note)
         
-        # Callback Function
         def save_on_download():
             salva_su_google_sheets(riga_db_dl)
             st.toast("✅ Salvato e Scaricato!", icon="💾")
@@ -444,7 +460,7 @@ with b2:
         st.download_button(
             label="💾 SALVA E SCARICA EXCEL",
             data=excel_data,
-            file_name=f"Prev_{cliente}_{datetime.date.today()}.xlsx",
+            file_name=f"Prev_{cliente}_{canale.split()[0]}_{datetime.date.today()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             on_click=save_on_download,
             type="primary",
