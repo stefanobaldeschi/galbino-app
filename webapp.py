@@ -17,7 +17,6 @@ st.set_page_config(page_title="Gestionale Galbino", page_icon="🏰", layout="wi
 # ==============================================================================
 
 def check_login():
-    """Gestisce il login e restituisce True se l'utente è autenticato"""
     if 'authentication_status' not in st.session_state:
         st.session_state['authentication_status'] = False
         st.session_state['user_role'] = None
@@ -26,12 +25,9 @@ def check_login():
     if st.session_state['authentication_status']:
         return True
 
-    # Schermata di Login
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.title("🔐 Accesso Gestionale")
-        st.markdown("Inserisci le credenziali per accedere all'area riservata.")
-        
         username = st.text_input("Utente")
         password = st.text_input("Password", type="password")
         
@@ -43,7 +39,7 @@ def check_login():
                 st.session_state['user_name'] = creds[username]["name"]
                 st.rerun()
             else:
-                st.error("Utente o password non corretti")
+                st.error("Utente o password non corretti.")
     return False
 
 def logout():
@@ -62,7 +58,7 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 # ==============================================================================
-# SEZIONE 2: APP PREVENTIVI AFFITTO (CASTLE RENTAL)
+# SEZIONE 2: APP PREVENTIVI AFFITTO
 # ==============================================================================
 
 def app_preventivi_affitto():
@@ -77,7 +73,6 @@ def app_preventivi_affitto():
         ("Prima Spesa", 0), ("Extra Cleaning", 200)
     ]
 
-    # PREZZI NETTI DI PARTENZA (Quelli che entrano in tasca a Galbino)
     RATES = {
         "Alta": {"Base": 1700, "We": 2635, "CapienzaBase": 16, "Max": 24},
         "Media": {"Base": 1275, "We": 1870, "CapienzaBase": 16, "Max": 24},
@@ -174,7 +169,6 @@ def app_preventivi_affitto():
         currency = workbook.add_format({'num_format': '#,##0.00 €', 'border': 1, 'align': 'center'})
         normal = workbook.add_format({'border': 1, 'align': 'center'})
         
-        # Setup Larghezze
         worksheet.set_column('A:B', 15); worksheet.set_column('C:C', 12); worksheet.set_column('D:D', 30)
         worksheet.set_column('E:F', 13); worksheet.set_column('G:H', 8); worksheet.set_column('I:K', 16)
         
@@ -218,11 +212,9 @@ def app_preventivi_affitto():
             return output.getvalue()
         except: return None
 
-    # --- UI AFFITTO ---
     with st.container():
         c_aut, c_can, c_cli = st.columns([1, 1, 2])
         with c_aut: 
-            # AUTO-SELEZIONE AUTORE BASATA SUL LOGIN
             current_user = st.session_state.get('user_name', 'Seleziona...')
             options_auth = ["Seleziona...", "Luca", "Stefano"]
             idx = options_auth.index(current_user) if current_user in options_auth else 0
@@ -242,7 +234,6 @@ def app_preventivi_affitto():
     if is_free: st.success("✅ DATE DISPONIBILI")
     else: st.error(f"⛔ {msg}")
 
-    # --- LOGICA DI CALCOLO (GROSS UP) ---
     notti = (checkout - checkin).days
     costo_netto_base, log_affitto = calcola_soggiorno_netto(checkin, notti, ospiti)
     affitto_calcolato = 0
@@ -250,22 +241,14 @@ def app_preventivi_affitto():
     sconto_long = 0
     
     if notti >= MIN_STAY and costo_netto_base is not None:
-        # 1. Calcolo Netto Scontato (se applicabile)
         netto_reale = costo_netto_base
         if notti >= 7:
             sconto_long = costo_netto_base * SCONTO_LUNGA_DURATA
             netto_reale = costo_netto_base - sconto_long
         
-        # 2. Applicazione Gross Up (Dal Netto al Lordo Piattaforma)
-        if canale == "Airbnb (+15%)": 
-            # Netto = Lordo * 0.85  -->  Lordo = Netto / 0.85
-            affitto_calcolato = netto_reale / 0.85
-        elif canale == "Oliver's (+20%)": 
-            # Netto = Lordo * 0.80  -->  Lordo = Netto / 0.80
-            affitto_calcolato = netto_reale / 0.80
-        else: 
-            # Netto Galbino
-            affitto_calcolato = netto_reale
+        if canale == "Airbnb (+15%)": affitto_calcolato = netto_reale / 0.85
+        elif canale == "Oliver's (+20%)": affitto_calcolato = netto_reale / 0.80
+        else: affitto_calcolato = netto_reale
     
     st.markdown("### 🍷 Servizi")
     dettagli_servizi_excel = {}
@@ -361,7 +344,6 @@ def app_preventivi_affitto():
 def app_catering_manager():
     st.title(f"👨‍🍳 Catering Manager (Utente: {st.session_state['user_name']})")
     
-    # --- DB CATERING ---
     def salva_db_catering(riga):
         try:
             client = get_gspread_client()
@@ -373,7 +355,7 @@ def app_catering_manager():
             st.error(f"Errore DB Catering: {e}")
             return False
 
-    def genera_excel_catering(cliente, data_evento, status, pax, prezzo, incasso_loc, tot_inc, fc, staff_tot, tot_costi, marg_eur, marg_perc, staff_list, menu, note):
+    def genera_excel_catering(cliente, data_evento, status, pax, prezzo, incasso_loc, tot_inc, fc, cost_utenze, kwh_val, p_kwh, staff_tot, tot_costi, marg_eur, marg_perc, staff_list, menu, note):
         output = io.BytesIO()
         workbook = xlsxwriter.Workbook(output, {'in_memory': True})
         ws = workbook.add_worksheet("Catering")
@@ -384,15 +366,20 @@ def app_catering_manager():
         ws.write('B1', status, fmt_head)
         
         ws.write('A3', "Incasso Totale"); ws.write('B3', tot_inc, fmt_curr)
-        ws.write('A4', "Costi Totali"); ws.write('B4', tot_costi, fmt_curr)
-        ws.write('A5', "Margine €"); ws.write('B5', marg_eur, fmt_curr)
-        ws.write('A6', "Margine %"); ws.write('B6', marg_perc, workbook.add_format({'num_format': '0.00%'}))
+        ws.write('A4', "Food Cost"); ws.write('B4', fc, fmt_curr)
+        ws.write('A5', f"Utenze ({kwh_val} kWh * €{p_kwh})"); ws.write('B5', cost_utenze, fmt_curr)
+        ws.write('A6', "Staff Totale"); ws.write('B6', staff_tot, fmt_curr)
+        ws.write('A7', "COSTI TOTALI"); ws.write('B7', tot_costi, fmt_curr)
         
-        ws.write('A8', "DETTAGLIO STAFF", fmt_head)
-        for i, s in enumerate(staff_list): ws.write(8+i+1, 0, s)
+        ws.write('A9', "Margine €"); ws.write('B9', marg_eur, fmt_curr)
+        ws.write('A10', "Margine %"); ws.write('B10', marg_perc, workbook.add_format({'num_format': '0.00%'}))
         
-        ws.write(8+len(staff_list)+2, 0, "MENU", fmt_head)
-        ws.write(8+len(staff_list)+3, 0, menu)
+        ws.write('A12', "DETTAGLIO STAFF", fmt_head)
+        for i, s in enumerate(staff_list): ws.write(12+i+1, 0, s)
+        
+        r_menu = 12+len(staff_list)+3
+        ws.write(r_menu, 0, "MENU", fmt_head)
+        ws.write(r_menu+1, 0, menu)
         
         workbook.close()
         return output.getvalue()
@@ -414,9 +401,21 @@ def app_catering_manager():
     st.divider()
     st.subheader("Costi")
     
-    food_cost = st.number_input("Food Cost Totale €", 0.0, value=500.0)
-    if pax > 0: st.caption(f"Food Cost pax: € {food_cost/pax:.2f}")
+    cc1, cc2 = st.columns(2)
+    with cc1: 
+        food_cost = st.number_input("Food Cost Totale €", 0.0, value=500.0)
+        if pax > 0: st.caption(f"Food Cost pax: € {food_cost/pax:.2f}")
+
+    with cc2:
+        st.markdown("**Utenze (Risc/Raff)**")
+        c_kwh, c_pr = st.columns(2)
+        kwh = c_kwh.number_input("kWh", 0.0, value=0.0)
+        price_kwh = c_pr.number_input("€/kWh", 0.0, value=0.60, step=0.05)
+        costo_utenze = kwh * price_kwh
+        if costo_utenze > 0:
+            st.caption(f"Totale Utenze: € {costo_utenze:.2f}")
     
+    st.markdown("#### Personale")
     num_staff = st.number_input("N. Staff", 0, value=3)
     costo_staff_tot = 0.0
     staff_list = []
@@ -424,10 +423,12 @@ def app_catering_manager():
     if num_staff > 0:
         cols = st.columns([2,2,1,1,1])
         cols[0].write("Nome"); cols[1].write("Ruolo"); cols[2].write("Ore"); cols[3].write("€/h"); cols[4].write("Tot")
+        ruoli_disponibili = ["Cameriere", "Cuoco", "Aiuto Cuoco", "Lavapiatti", "Extra"]
         for i in range(int(num_staff)):
             cc = st.columns([2,2,1,1,1])
+            idx_default = 1 if i == 0 else 0
             nome = cc[0].text_input(f"n{i}", label_visibility="collapsed")
-            ruolo = cc[1].selectbox(f"r{i}", ["Cameriere", "Cuoco", "Extra"], label_visibility="collapsed")
+            ruolo = cc[1].selectbox(f"r{i}", ruoli_disponibili, index=idx_default, label_visibility="collapsed")
             ore = cc[2].number_input(f"o{i}", 0.0, value=6.0, step=0.5, label_visibility="collapsed")
             paga = cc[3].number_input(f"p{i}", 0.0, value=10.0, label_visibility="collapsed")
             tot = ore * paga
@@ -437,7 +438,7 @@ def app_catering_manager():
             
     st.write(f"**Totale Staff: € {costo_staff_tot:,.2f}**")
     
-    totale_costi = food_cost + costo_staff_tot
+    totale_costi = food_cost + costo_staff_tot + costo_utenze
     margine = totale_incasso - totale_costi
     margine_perc = (margine / totale_incasso * 100) if totale_incasso > 0 else 0
     
@@ -453,11 +454,11 @@ def app_catering_manager():
     b1, b2 = st.columns(2)
     with b1:
         if st.button("☁️ SALVA CATERING"):
-            riga = [status_prev, data_evento.strftime("%d/%m/%Y"), cliente, tipo, pax, prezzo_pax, incasso_loc, totale_incasso, food_cost, costo_staff_tot, totale_costi, margine, f"{margine_perc:.2f}%", " | ".join(staff_list), menu, note]
+            riga = [status_prev, data_evento.strftime("%d/%m/%Y"), cliente, tipo, pax, prezzo_pax, incasso_loc, totale_incasso, food_cost, costo_utenze, costo_staff_tot, totale_costi, margine, f"{margine_perc:.2f}%", " | ".join(staff_list), menu, note]
             if salva_db_catering(riga): st.toast("Salvato!")
             
     with b2:
-        exc = genera_excel_catering(cliente, data_evento, status_prev, pax, prezzo_pax, incasso_loc, totale_incasso, food_cost, costo_staff_tot, totale_costi, margine, margine_perc/100, staff_list, menu, note)
+        exc = genera_excel_catering(cliente, data_evento, status_prev, pax, prezzo_pax, incasso_loc, totale_incasso, food_cost, costo_utenze, kwh, price_kwh, costo_staff_tot, totale_costi, margine, margine_perc/100, staff_list, menu, note)
         st.download_button("💾 SCARICA REPORT", exc, f"Cat_{cliente}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
 # ==============================================================================
