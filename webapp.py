@@ -7,479 +7,481 @@ from icalendar import Calendar
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import traceback
+import time
 
-# --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="Preventivi Galbino", page_icon="🏰", layout="wide")
+# --- CONFIGURAZIONE GLOBALE ---
+st.set_page_config(page_title="Gestionale Galbino", page_icon="🏰", layout="wide")
 
-# --- 0. CALENDARIO LODGIFY ---
-LODGIFY_ICAL_URL = "https://www.lodgify.com/5bab045e-30ec-4edf-aabf-970d352e7549.ics"
+# ==============================================================================
+# SEZIONE 0: SISTEMA DI AUTENTICAZIONE
+# ==============================================================================
 
-# --- 1. DATI ---
-LISTA_SERVIZI = [
-    ("Wedding Fee", 30), 
-    ("Breakfast", 20),
-    ("Lunch", 45),
-    ("Dinner", 75),
-    ("BBQ", 60),
-    ("Cooking Class", 120),
-    ("Wine Tasting", 50),
-    ("Truffle Hunting", 150),
-    ("Ebike Tour", 80),
-    ("Transfer", 150),
-    ("Prima Spesa", 0),
-    ("Extra Cleaning", 200)
-]
+def check_login():
+    """Gestisce il login e restituisce True se l'utente è autenticato"""
+    if 'authentication_status' not in st.session_state:
+        st.session_state['authentication_status'] = False
+        st.session_state['user_role'] = None
+        st.session_state['user_name'] = None
 
-# PREZZI NETTI BASE (Tuoi, puliti)
-RATES = {
-    "Alta": {"Base": 1700, "We": 2635, "CapienzaBase": 16, "Max": 24},
-    "Media": {"Base": 1275, "We": 1870, "CapienzaBase": 16, "Max": 24},
-    "Bassa": {"Base": 1020, "We": 1020, "CapienzaBase": 10, "Max": 22}
-}
-
-COSTO_EXTRA_PAX = 100
-SCONTO_LUNGA_DURATA = 0.15
-MIN_STAY = 3
-
-# --- FUNZIONI UTILI ---
-def calcola_pasqua(anno):
-    a, b, c = anno % 19, anno // 100, anno % 100
-    d, e = b // 4, b % 4
-    f = (b + 8) // 25
-    g = (b - f + 1) // 3
-    h = (19 * a + b - d - g + 15) % 30
-    i, k = c // 4, c % 4
-    l = (32 + 2 * e + 2 * i - h - k) % 7
-    m = (a + 11 * h + 22 * l) // 451
-    mese = (h + l - 7 * m + 114) // 31
-    giorno = ((h + l - 7 * m + 114) % 31) + 1
-    return datetime.date(anno, mese, giorno)
-
-def get_stagione(data):
-    anno = data.year
-    dt_pasqua = calcola_pasqua(anno)
-    if (dt_pasqua - datetime.timedelta(days=5)) <= data <= (dt_pasqua + datetime.timedelta(days=2)): return "Media"
-    if datetime.date(anno, 12, 20) <= data <= datetime.date(anno, 12, 31) or datetime.date(anno, 1, 1) <= data <= datetime.date(anno, 1, 6): return "Media"
-    maggio_31 = datetime.date(anno, 5, 31)
-    inizio_alta = maggio_31 - datetime.timedelta(days=(maggio_31.weekday() - 3) % 7)
-    luglio_31 = datetime.date(anno, 7, 31)
-    ultimo_lun_luglio = luglio_31 - datetime.timedelta(days=luglio_31.weekday())
-    fine_alta = ultimo_lun_luglio - datetime.timedelta(days=1)
-    if inizio_alta <= data <= fine_alta: return "Alta"
-    inizio_media_1 = datetime.date(anno, 4, 1)
-    fine_media_2 = datetime.date(anno, 8, 31)
-    inizio_media_3 = datetime.date(anno, 9, 1)
-    primo_ott = datetime.date(anno, 10, 1)
-    terza_dom_ott = primo_ott + datetime.timedelta(days=(6 - primo_ott.weekday()) % 7) + datetime.timedelta(days=14)
-    if (inizio_media_1 <= data < inizio_alta) or (ultimo_lun_luglio <= data <= fine_media_2) or (inizio_media_3 <= data <= terza_dom_ott): return "Media"
-    return "Bassa"
-
-def calcola_soggiorno_netto(data_arrivo, notti, ospiti):
-    tot, log = 0, []
-    for i in range(notti):
-        giorno = data_arrivo + datetime.timedelta(days=i)
-        stg = get_stagione(giorno)
-        tipo = "We" if giorno.weekday() in [3,4,5,6] else "Base"
-        tariffa = RATES[stg]
-        if ospiti > tariffa["Max"]: return None, f"Troppi ospiti per {stg} (Max {tariffa['Max']})"
-        prezzo = tariffa[tipo] + (max(0, ospiti - tariffa["CapienzaBase"]) * COSTO_EXTRA_PAX)
-        tot += prezzo
-        log.append(f"{giorno.strftime('%d/%m')}: €{prezzo}")
-    return tot, log
-
-def check_availability(checkin, checkout, url):
-    if not url: return None, "Link mancante"
-    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"}
-    try:
-        r = requests.get(url, headers=headers)
-        r.raise_for_status()
-        cal = Calendar.from_ical(r.content)
-        checkin_dt = checkin
-        checkout_dt = checkout
-        is_occupied = False
-        msg_occupato = ""
-        for component in cal.walk():
-            if component.name == "VEVENT":
-                dtstart = component.get('dtstart').dt
-                dtend = component.get('dtend').dt
-                if isinstance(dtstart, datetime.datetime): dtstart = dtstart.date()
-                if isinstance(dtend, datetime.datetime): dtend = dtend.date()
-                if (checkin_dt < dtend) and (checkout_dt > dtstart):
-                    is_occupied = True
-                    msg_occupato = f"Occupato: {dtstart.strftime('%d/%m')} - {dtend.strftime('%d/%m')}"
-        if is_occupied: return False, msg_occupato
-        else: return True, "Libero"
-    except Exception as e: return None, f"Errore: {e}"
-
-# --- SALVATAGGIO DATABASE GOOGLE ---
-def salva_su_google_sheets(riga_dati):
-    try:
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
-        client = gspread.authorize(creds)
-        sheet = client.open_by_url(st.secrets["spreadsheet_url"]).sheet1
-        sheet.append_row(riga_dati)
+    if st.session_state['authentication_status']:
         return True
-    except Exception as e:
-        print(f"Errore DB: {e}")
-        return False
 
-# --- DOWNLOADER DATABASE COMPLETO ---
-def download_full_db_excel():
-    try:
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
-        client = gspread.authorize(creds)
-        sheet = client.open_by_url(st.secrets["spreadsheet_url"]).sheet1
-        data = sheet.get_all_values()
-        if len(data) < 2: return None
+    # Schermata di Login
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.title("🔐 Accesso Gestionale")
+        st.markdown("Inserisci le credenziali per accedere all'area riservata.")
+        
+        username = st.text_input("Utente")
+        password = st.text_input("Password", type="password")
+        
+        if st.button("ACCEDI", type="primary", use_container_width=True):
+            creds = st.secrets.get("credentials")
+            if creds and username in creds and creds[username]["password"] == password:
+                st.session_state['authentication_status'] = True
+                st.session_state['user_role'] = creds[username]["role"]
+                st.session_state['user_name'] = creds[username]["name"]
+                st.rerun()
+            else:
+                st.error("Utente o password non corretti")
+    return False
 
+def logout():
+    st.session_state['authentication_status'] = False
+    st.session_state['user_role'] = None
+    st.session_state['user_name'] = None
+    st.rerun()
+
+# ==============================================================================
+# SEZIONE 1: FUNZIONI COMUNI
+# ==============================================================================
+
+def get_gspread_client():
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
+    return gspread.authorize(creds)
+
+# ==============================================================================
+# SEZIONE 2: APP PREVENTIVI AFFITTO (CASTLE RENTAL)
+# ==============================================================================
+
+def app_preventivi_affitto():
+    st.title(f"🏰 Preventivi Affitto (Utente: {st.session_state['user_name']})")
+    
+    LODGIFY_ICAL_URL = "https://www.lodgify.com/5bab045e-30ec-4edf-aabf-970d352e7549.ics"
+    
+    LISTA_SERVIZI = [
+        ("Wedding Fee", 30), ("Breakfast", 20), ("Lunch", 45), ("Dinner", 75),
+        ("BBQ", 60), ("Cooking Class", 120), ("Wine Tasting", 50),
+        ("Truffle Hunting", 150), ("Ebike Tour", 80), ("Transfer", 150),
+        ("Prima Spesa", 0), ("Extra Cleaning", 200)
+    ]
+
+    # PREZZI NETTI DI PARTENZA (Quelli che entrano in tasca a Galbino)
+    RATES = {
+        "Alta": {"Base": 1700, "We": 2635, "CapienzaBase": 16, "Max": 24},
+        "Media": {"Base": 1275, "We": 1870, "CapienzaBase": 16, "Max": 24},
+        "Bassa": {"Base": 1020, "We": 1020, "CapienzaBase": 10, "Max": 22}
+    }
+    COSTO_EXTRA_PAX = 100
+    SCONTO_LUNGA_DURATA = 0.15
+    MIN_STAY = 3
+
+    def calcola_pasqua(anno):
+        a, b, c = anno % 19, anno // 100, anno % 100
+        d, e = b // 4, b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i, k = c // 4, c % 4
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        mese = (h + l - 7 * m + 114) // 31
+        giorno = ((h + l - 7 * m + 114) % 31) + 1
+        return datetime.date(anno, mese, giorno)
+
+    def get_stagione(data):
+        anno = data.year
+        dt_pasqua = calcola_pasqua(anno)
+        if (dt_pasqua - datetime.timedelta(days=5)) <= data <= (dt_pasqua + datetime.timedelta(days=2)): return "Media"
+        if datetime.date(anno, 12, 20) <= data <= datetime.date(anno, 12, 31) or datetime.date(anno, 1, 1) <= data <= datetime.date(anno, 1, 6): return "Media"
+        maggio_31 = datetime.date(anno, 5, 31)
+        inizio_alta = maggio_31 - datetime.timedelta(days=(maggio_31.weekday() - 3) % 7)
+        luglio_31 = datetime.date(anno, 7, 31)
+        ultimo_lun_luglio = luglio_31 - datetime.timedelta(days=luglio_31.weekday())
+        fine_alta = ultimo_lun_luglio - datetime.timedelta(days=1)
+        if inizio_alta <= data <= fine_alta: return "Alta"
+        inizio_media_1 = datetime.date(anno, 4, 1)
+        fine_media_2 = datetime.date(anno, 8, 31)
+        inizio_media_3 = datetime.date(anno, 9, 1)
+        primo_ott = datetime.date(anno, 10, 1)
+        terza_dom_ott = primo_ott + datetime.timedelta(days=(6 - primo_ott.weekday()) % 7) + datetime.timedelta(days=14)
+        if (inizio_media_1 <= data < inizio_alta) or (ultimo_lun_luglio <= data <= fine_media_2) or (inizio_media_3 <= data <= terza_dom_ott): return "Media"
+        return "Bassa"
+
+    def calcola_soggiorno_netto(data_arrivo, notti, ospiti):
+        tot, log = 0, []
+        for i in range(notti):
+            giorno = data_arrivo + datetime.timedelta(days=i)
+            stg = get_stagione(giorno)
+            tipo = "We" if giorno.weekday() in [3,4,5,6] else "Base"
+            tariffa = RATES[stg]
+            if ospiti > tariffa["Max"]: return None, f"Troppi ospiti per {stg} (Max {tariffa['Max']})"
+            prezzo = tariffa[tipo] + (max(0, ospiti - tariffa["CapienzaBase"]) * COSTO_EXTRA_PAX)
+            tot += prezzo
+            log.append(f"{giorno.strftime('%d/%m')}: €{prezzo}")
+        return tot, log
+
+    def check_availability(checkin, checkout, url):
+        headers = {"User-Agent": "Mozilla/5.0"}
+        try:
+            r = requests.get(url, headers=headers)
+            r.raise_for_status()
+            cal = Calendar.from_ical(r.content)
+            checkin_dt = checkin
+            checkout_dt = checkout
+            is_occupied = False
+            msg_occupato = ""
+            for component in cal.walk():
+                if component.name == "VEVENT":
+                    dtstart = component.get('dtstart').dt
+                    dtend = component.get('dtend').dt
+                    if isinstance(dtstart, datetime.datetime): dtstart = dtstart.date()
+                    if isinstance(dtend, datetime.datetime): dtend = dtend.date()
+                    if (checkin_dt < dtend) and (checkout_dt > dtstart):
+                        is_occupied = True
+                        msg_occupato = f"Occupato: {dtstart.strftime('%d/%m')} - {dtend.strftime('%d/%m')}"
+            if is_occupied: return False, msg_occupato
+            else: return True, "Libero"
+        except Exception as e: return None, f"Errore: {e}"
+
+    def salva_su_google_sheets(riga_dati):
+        try:
+            client = get_gspread_client()
+            sheet = client.open_by_url(st.secrets["spreadsheet_url"]).sheet1
+            sheet.append_row(riga_dati)
+            return True
+        except Exception as e:
+            st.error(f"Errore DB Affitti: {e}")
+            return False
+            
+    def generate_excel(autore, canale, cliente, checkin, checkout, notti, ospiti, affitto_finale, pulizie, dettagli_servizi, sconto, totale_gen, costo_medio, note):
         output = io.BytesIO()
         workbook = xlsxwriter.Workbook(output, {'in_memory': True})
-        worksheet = workbook.add_worksheet("Database Completo")
+        worksheet = workbook.add_worksheet("Preventivo")
+        bold = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'bg_color': '#D3D3D3'})
+        merge_format = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#FFD700'}) 
+        currency = workbook.add_format({'num_format': '#,##0.00 €', 'border': 1, 'align': 'center'})
+        normal = workbook.add_format({'border': 1, 'align': 'center'})
         
-        # Stili
-        fmt_header_grey = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#EFEFEF', 'font_size': 11})
-        fmt_header_gold = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#FFD700', 'font_size': 11})
-        fmt_subheader = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'font_size': 9, 'bg_color': '#FFF8DC'})
-        fmt_currency = workbook.add_format({'num_format': '#,##0.00 €', 'border': 1, 'align': 'center'})
-        fmt_normal = workbook.add_format({'border': 1, 'align': 'center'})
+        # Setup Larghezze
+        worksheet.set_column('A:B', 15); worksheet.set_column('C:C', 12); worksheet.set_column('D:D', 30)
+        worksheet.set_column('E:F', 13); worksheet.set_column('G:H', 8); worksheet.set_column('I:K', 16)
         
-        # Autofit
-        col_widths = {}
-        for row in data:
-            for i, cell_value in enumerate(row):
-                length = len(str(cell_value))
-                if i not in col_widths or length > col_widths[i]: col_widths[i] = length
-        for col_idx, width in col_widths.items():
-            final_width = max(10, min(width + 2, 60))
-            worksheet.set_column(col_idx, col_idx, final_width)
+        general_headers = ["Autore", "Canale", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto", "Media/Notte", "Pulizie"]
+        worksheet.write_row('A1', general_headers, bold)
+        worksheet.write_row('A2', [autore, canale, datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti], normal)
+        worksheet.write('I2', affitto_finale, currency); worksheet.write('J2', costo_medio, currency); worksheet.write('K2', pulizie, currency)
 
-        # Intestazioni (AGGIUNTO CANALE)
-        headers_gen = ["Autore", "Canale", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto", "Media/Notte", "Pulizie"]
-        for i, h in enumerate(headers_gen): worksheet.merge_range(0, i, 1, i, h, fmt_header_grey)
-            
-        col_idx = 11 # Spostato di 1 per colonna Canale
+        col_idx = 11 
         for nome, _ in LISTA_SERVIZI:
-            worksheet.merge_range(0, col_idx, 0, col_idx+3, nome.upper(), fmt_header_gold)
-            worksheet.write(1, col_idx, "€ Unit", fmt_subheader)
-            worksheet.write(1, col_idx+1, "Pax", fmt_subheader)
-            worksheet.write(1, col_idx+2, "Qta", fmt_subheader)
-            worksheet.write(1, col_idx+3, "Totale", fmt_subheader)
-            col_idx += 4
-            
+            worksheet.merge_range(0, col_idx, 0, col_idx+3, nome.upper(), merge_format)
+            worksheet.write_row(1, col_idx, ["€ Unit", "Pax", "Qta", "Totale"], bold)
+            if nome in dettagli_servizi:
+                d = dettagli_servizi[nome]
+                worksheet.write(2, col_idx, d['p_unit'], currency); worksheet.write(2, col_idx+1, d['pax'], normal)
+                worksheet.write(2, col_idx+2, d['qta'], normal); worksheet.write(2, col_idx+3, d['subtotale'], currency)
+            else:
+                worksheet.write_row(2, col_idx, [0, 0, 0, 0], currency)
+            col_idx += 4 
+
         col_idx += 1
-        worksheet.merge_range(0, col_idx, 1, col_idx, "SCONTO", fmt_header_grey)
-        worksheet.merge_range(0, col_idx+1, 1, col_idx+1, "TOTALE", fmt_header_gold)
-        worksheet.merge_range(0, col_idx+2, 1, col_idx+2, "NOTE", fmt_header_grey)
-
-        raw_rows = data[1:] 
-        for row_num, row_data in enumerate(raw_rows):
-            excel_row = row_num + 2
-            try:
-                # Colonne 0-7 (Testo/Numeri semplici) incluse Autore e Canale
-                for c in range(8): worksheet.write(excel_row, c, row_data[c], fmt_normal)
-                
-                to_float = lambda x: float(str(x).replace(',', '.').replace('€', '').strip()) if x and x != '0' else 0.0
-                
-                worksheet.write(excel_row, 8, to_float(row_data[8]), fmt_currency) # Affitto
-                worksheet.write(excel_row, 9, to_float(row_data[9]), fmt_currency) # Media
-                worksheet.write(excel_row, 10, to_float(row_data[10]), fmt_currency) # Pulizie
-                
-                current_col_idx = 11
-                db_service_start_idx = 11
-                for _ in LISTA_SERVIZI:
-                    worksheet.write(excel_row, current_col_idx, to_float(row_data[db_service_start_idx]), fmt_currency)
-                    worksheet.write(excel_row, current_col_idx+1, row_data[db_service_start_idx+1], fmt_normal)
-                    worksheet.write(excel_row, current_col_idx+2, row_data[db_service_start_idx+2], fmt_normal)
-                    worksheet.write(excel_row, current_col_idx+3, to_float(row_data[db_service_start_idx+3]), fmt_currency)
-                    current_col_idx += 4
-                    db_service_start_idx += 4
-                
-                worksheet.write(excel_row, current_col_idx + 1, to_float(row_data[db_service_start_idx]), fmt_currency) 
-                worksheet.write(excel_row, current_col_idx + 2, to_float(row_data[db_service_start_idx+1]), fmt_currency) 
-                note_val = row_data[db_service_start_idx+2] if len(row_data) > db_service_start_idx+2 else ""
-                worksheet.write(excel_row, current_col_idx + 3, note_val, fmt_normal)
-            except Exception: continue 
-
+        worksheet.write(0, col_idx, "SCONTO", bold); worksheet.write(2, col_idx, sconto, currency)
+        worksheet.write(0, col_idx+1, "TOTALE", bold); worksheet.write(2, col_idx+1, totale_gen, currency)
+        worksheet.write(0, col_idx+2, "NOTE", bold); worksheet.write(2, col_idx+2, note, normal)
         workbook.close()
         return output.getvalue()
-    except Exception: return None
-
-# --- EXCEL GENERATOR (Preventivo Singolo) ---
-def generate_excel(autore, canale, cliente, checkin, checkout, notti, ospiti, affitto_finale, pulizie, dettagli_servizi, sconto, totale_gen, costo_medio, note):
-    output = io.BytesIO()
-    workbook = xlsxwriter.Workbook(output, {'in_memory': True})
-    worksheet = workbook.add_worksheet("Preventivo")
-    bold = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'bg_color': '#D3D3D3'})
-    merge_format = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#FFD700'}) 
-    currency = workbook.add_format({'num_format': '#,##0.00 €', 'border': 1, 'align': 'center'})
-    normal = workbook.add_format({'border': 1, 'align': 'center'})
     
-    # Setup Larghezze
-    worksheet.set_column('A:A', 15) # Autore
-    worksheet.set_column('B:B', 15) # Canale (Nuovo)
-    worksheet.set_column('C:C', 12) # Data
-    worksheet.set_column('D:D', 30) # Cliente
-    worksheet.set_column('E:F', 13) # Date
-    worksheet.set_column('G:H', 8)  # Notti/Ospiti
-    worksheet.set_column('I:K', 16) # Costi
-    
-    start_col = 11
-    for _ in LISTA_SERVIZI:
-        worksheet.set_column(start_col, start_col, 14)
-        worksheet.set_column(start_col+1, start_col+2, 6)
-        worksheet.set_column(start_col+3, start_col+3, 14)
-        start_col += 4
-    worksheet.set_column(start_col+1, start_col+2, 18)
-    worksheet.set_column(start_col+3, start_col+3, 50)
+    def download_full_db_excel():
+        try:
+            client = get_gspread_client()
+            sheet = client.open_by_url(st.secrets["spreadsheet_url"]).sheet1
+            data = sheet.get_all_values()
+            if len(data) < 2: return None
+            output = io.BytesIO()
+            workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+            worksheet = workbook.add_worksheet("DB Completo")
+            for r, row in enumerate(data):
+                for c, val in enumerate(row):
+                    worksheet.write(r, c, val)
+            workbook.close()
+            return output.getvalue()
+        except: return None
 
-    # Header
-    general_headers = ["Autore", "Canale", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto", "Media/Notte", "Pulizie"]
-    worksheet.write_row('A1', general_headers, bold)
-    
-    worksheet.write('A2', autore, normal)
-    worksheet.write('B2', canale, normal)
-    worksheet.write('C2', datetime.date.today().strftime("%d/%m/%Y"), normal)
-    worksheet.write('D2', cliente, normal)
-    worksheet.write('E2', checkin.strftime("%d/%m/%Y"), normal)
-    worksheet.write('F2', checkout.strftime("%d/%m/%Y"), normal)
-    worksheet.write('G2', notti, normal)
-    worksheet.write('H2', ospiti, normal)
-    worksheet.write('I2', affitto_finale, currency)
-    worksheet.write('J2', costo_medio, currency) 
-    worksheet.write('K2', pulizie, currency)     
-
-    col_idx = 11 
-    for nome, _ in LISTA_SERVIZI:
-        worksheet.merge_range(0, col_idx, 0, col_idx+3, nome.upper(), merge_format)
-        worksheet.write(1, col_idx, "€ Unit", bold)
-        worksheet.write(1, col_idx+1, "Pax", bold)
-        worksheet.write(1, col_idx+2, "Qta", bold)
-        worksheet.write(1, col_idx+3, "Totale", bold)
+    # --- UI AFFITTO ---
+    with st.container():
+        c_aut, c_can, c_cli = st.columns([1, 1, 2])
+        with c_aut: 
+            # AUTO-SELEZIONE AUTORE BASATA SUL LOGIN
+            current_user = st.session_state.get('user_name', 'Seleziona...')
+            options_auth = ["Seleziona...", "Luca", "Stefano"]
+            idx = options_auth.index(current_user) if current_user in options_auth else 0
+            autore = st.selectbox("Autore", options_auth, index=idx)
+            
+        with c_can: 
+            canale = st.radio("Listino", ["Netto Galbino", "Airbnb (+15%)", "Oliver's (+20%)"], horizontal=True)
+            
+        with c_cli: cliente = st.text_input("Nome Cliente")
         
-        if nome in dettagli_servizi:
-            dati = dettagli_servizi[nome]
-            worksheet.write(2, col_idx, dati['p_unit'], currency)
-            worksheet.write(2, col_idx+1, dati['pax'], normal)
-            worksheet.write(2, col_idx+2, dati['qta'], normal)
-            worksheet.write(2, col_idx+3, dati['subtotale'], currency)
-        else:
-            worksheet.write(2, col_idx, 0, currency)
-            worksheet.write(2, col_idx+1, 0, normal)
-            worksheet.write(2, col_idx+2, 0, normal)
-            worksheet.write(2, col_idx+3, 0, currency)
-        col_idx += 4 
+        c1, c2, c3 = st.columns(3)
+        with c1: checkin = st.date_input("Check-In", datetime.date.today(), format="DD/MM/YYYY")
+        with c2: checkout = st.date_input("Check-Out", datetime.date.today() + datetime.timedelta(days=MIN_STAY), format="DD/MM/YYYY")
+        with c3: ospiti = st.number_input("Ospiti", min_value=1, value=10)
 
-    col_idx += 1
-    worksheet.write(0, col_idx, "SCONTO", bold)
-    worksheet.write(2, col_idx, sconto, currency)
-    worksheet.write(0, col_idx+1, "TOTALE PREVENTIVO", bold)
-    worksheet.write(2, col_idx+1, totale_gen, currency)
-    worksheet.write(0, col_idx+2, "NOTE", bold)
-    worksheet.write(2, col_idx+2, note, normal)
-    workbook.close()
-    return output.getvalue()
+    is_free, msg = check_availability(checkin, checkout, LODGIFY_ICAL_URL)
+    if is_free: st.success("✅ DATE DISPONIBILI")
+    else: st.error(f"⛔ {msg}")
 
-def aggiorna_date():
-    if 'data_in' in st.session_state: st.session_state.data_out = st.session_state.data_in + datetime.timedelta(days=MIN_STAY)
-
-# --- INTERFACCIA ---
-st.title("🏰 Castello di Galbino")
-
-with st.container():
-    st.markdown("### 📅 Dati Soggiorno")
-    
-    # --- RIGA 1: Autore, Canale, Cliente ---
-    c_aut, c_can, c_cli = st.columns([1, 1, 2])
-    with c_aut:
-        autore = st.selectbox("Autore", ["Seleziona...", "Luca", "Stefano"])
-    with c_can:
-        # SELETTORE MULTICANALE
-        canale = st.radio("Listino / Canale", ["Netto Galbino", "Airbnb (+15%)", "Oliver's (+20%)"], horizontal=True)
-    with c_cli:
-        cliente = st.text_input("Nome Cliente")
-    
-    c1, c2, c3 = st.columns(3)
-    with c1: checkin = st.date_input("Check-In", value=datetime.date.today(), key='data_in', on_change=aggiorna_date, format="DD/MM/YYYY")
-    with c2: 
-        default_out = datetime.date.today() + datetime.timedelta(days=MIN_STAY)
-        if 'data_out' not in st.session_state: st.session_state.data_out = default_out
-        checkout = st.date_input("Check-Out", key='data_out', format="DD/MM/YYYY")
-    with c3: ospiti = st.number_input("Ospiti a Dormire", min_value=1, value=10)
-
-is_free, msg = check_availability(checkin, checkout, LODGIFY_ICAL_URL)
-if is_free is True: st.success(f"✅ DATE DISPONIBILI")
-elif is_free is False: st.error(f"⛔ {msg}")
-else: st.warning(f"⚠️ Errore controllo: {msg}")
-
-# --- CALCOLO LIVE (NETTO) ---
-notti = (checkout - checkin).days
-costo_netto_base = 0
-affitto_calcolato = 0
-sconto_long = 0
-desc_affitto = ""
-log_affitto = ""
-
-if notti >= MIN_STAY and notti > 0:
+    # --- LOGICA DI CALCOLO (GROSS UP) ---
+    notti = (checkout - checkin).days
     costo_netto_base, log_affitto = calcola_soggiorno_netto(checkin, notti, ospiti)
-    if costo_netto_base is not None:
-        # Calcolo Sconto Lunga Durata (sul netto)
-        netto_scontato = costo_netto_base
+    affitto_calcolato = 0
+    netto_reale = 0
+    sconto_long = 0
+    
+    if notti >= MIN_STAY and costo_netto_base is not None:
+        # 1. Calcolo Netto Scontato (se applicabile)
+        netto_reale = costo_netto_base
         if notti >= 7:
             sconto_long = costo_netto_base * SCONTO_LUNGA_DURATA
-            netto_scontato = costo_netto_base - sconto_long
+            netto_reale = costo_netto_base - sconto_long
         
-        # APPLICAZIONE MARKUP CANALE (SCORPORO)
-        # Se voglio 100 Netto e Airbnb vuole 15%, Prezzo = 100 / (1 - 0.15)
-        if canale == "Airbnb (+15%)":
-            affitto_calcolato = netto_scontato / 0.85
-        elif canale == "Oliver's (+20%)":
-            affitto_calcolato = netto_scontato / 0.80
-        else:
-            affitto_calcolato = netto_scontato # Netto Galbino
-else:
-    affitto_calcolato = 0
-
-st.markdown("### 🍷 Servizi")
-dettagli_servizi_excel = {}
-totale_servizi = 0
-descrizione_servizi_txt = [] 
-
-for nome, prezzo_def in LISTA_SERVIZI:
-    with st.expander(f"{nome}"):
-        if "Wedding" in nome:
-            c1, c2 = st.columns(2)
-            p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
-            pax = c2.number_input("Invitati", min_value=0, value=0, key=f"x_{nome}")
-            qta = 1 
-        elif "Truffle" in nome:
-            c1, c2 = st.columns(2)
-            p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
-            pax = c2.number_input("Partecipanti", min_value=0, value=0, key=f"x_{nome}")
-            qta = 1
-        elif "Prima Spesa" in nome:
-            p_unit = st.number_input(f"Costo Scontrino", value=0.0, key=f"p_{nome}")
-            pax = 1
-            qta = 1
-        elif "Transfer" in nome or "Extra Cleaning" in nome:
-            c1, c2 = st.columns(2)
-            p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
-            pax = 1 
-            qta = c2.number_input(f"Quantità/Volte", min_value=0, value=0, key=f"q_{nome}")
-        else:
-            c1, c2, c3 = st.columns(3)
-            p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
-            pax = c2.number_input(f"Pax", min_value=0, value=0, key=f"x_{nome}")
-            qta = c3.number_input(f"Qta", min_value=0, value=0, key=f"q_{nome}")
-        
-        condizione_attiva = False
-        if "Prima Spesa" in nome and p_unit > 0: condizione_attiva = True
-        elif p_unit > 0 and pax > 0 and qta > 0: condizione_attiva = True
-            
-        if condizione_attiva:
-            sub = p_unit * pax * qta
-            totale_servizi += sub
-            dettagli_servizi_excel[nome] = {'p_unit': p_unit, 'pax': pax, 'qta': qta, 'subtotale': sub}
-            
-            if "Wedding" in nome: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {pax} = €{sub:.2f}")
-            elif "Prima Spesa" in nome: descrizione_servizi_txt.append(f"{nome}: €{sub:.2f}")
-            elif "Transfer" in nome or "Extra Cleaning" in nome: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {qta} = €{sub:.2f}")
-            else: descrizione_servizi_txt.append(f"{nome}: €{p_unit} x {pax} x {qta} = €{sub:.2f}")
-
-st.divider()
-c_f1, c_f2 = st.columns(2)
-with c_f1: sconto = st.number_input("Sconto Manuale (€)", min_value=0.0, step=50.0)
-with c_f2: note = st.text_area("Note interne")
-
-# --- CALCOLO TOTALI ---
-pulizie = 600
-totale_gen = affitto_calcolato + pulizie + totale_servizi - sconto
-costo_medio_notte = 0
-if notti > 0: costo_medio_notte = affitto_calcolato / notti
-
-# --- DISPLAY LIVE ---
-st.divider()
-st.markdown("### 💰 Preventivo Live")
-col_res1, col_res2, col_res3 = st.columns(3)
-col_res1.metric(f"Affitto ({canale})", f"€ {affitto_calcolato:,.2f}")
-col_res2.metric("Servizi Extra", f"€ {totale_servizi:,.2f}")
-col_res3.metric("TOTALE STIMATO", f"€ {totale_gen:,.2f}", delta_color="normal")
-
-# --- VALIDAZIONE ---
-is_valid = True
-if autore == "Seleziona...": is_valid = False
-elif notti < MIN_STAY: is_valid = False
-elif costo_netto_base is None: is_valid = False
-
-# --- BOTTONI AZIONE ---
-b1, b2 = st.columns(2)
-
-with b1:
-    if st.button("☁️ SALVA SOLO SU CLOUD", use_container_width=True):
-        if not is_valid:
-            if autore == "Seleziona...": st.error("⚠️ Manca Autore!")
-            elif notti < MIN_STAY: st.error(f"⚠️ Minimo {MIN_STAY} notti.")
-            else: st.error(f"❌ {log_affitto}")
-        else:
-            riga_db = [
-                autore, canale, datetime.date.today().strftime("%d/%m/%Y"), cliente,
-                checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), 
-                notti, ospiti, affitto_calcolato, costo_medio_notte, pulizie
-            ]
-            for s_nome, _ in LISTA_SERVIZI:
-                if s_nome in dettagli_servizi_excel:
-                    dati = dettagli_servizi_excel[s_nome]
-                    riga_db.extend([dati['p_unit'], dati['pax'], dati['qta'], dati['subtotale']])
-                else: riga_db.extend([0, 0, 0, 0])
-            riga_db.extend([sconto, totale_gen, note])
-            
-            if salva_su_google_sheets(riga_db):
-                st.toast(f"✅ Preventivo {canale} Salvato!", icon="☁️")
-
-with b2:
-    if is_valid:
-        riga_db_dl = [
-            autore, canale, datetime.date.today().strftime("%d/%m/%Y"), cliente,
-            checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), 
-            notti, ospiti, affitto_calcolato, costo_medio_notte, pulizie
-        ]
-        for s_nome, _ in LISTA_SERVIZI:
-            if s_nome in dettagli_servizi_excel:
-                dati = dettagli_servizi_excel[s_nome]
-                riga_db_dl.extend([dati['p_unit'], dati['pax'], dati['qta'], dati['subtotale']])
-            else: riga_db_dl.extend([0, 0, 0, 0])
-        riga_db_dl.extend([sconto, totale_gen, note])
-
-        excel_data = generate_excel(autore, canale, cliente, checkin, checkout, notti, ospiti, affitto_calcolato, pulizie, dettagli_servizi_excel, sconto, totale_gen, costo_medio_notte, note)
-        
-        def save_on_download():
-            salva_su_google_sheets(riga_db_dl)
-            st.toast("✅ Salvato e Scaricato!", icon="💾")
-
-        st.download_button(
-            label="💾 SALVA E SCARICA EXCEL",
-            data=excel_data,
-            file_name=f"Prev_{cliente}_{canale.split()[0]}_{datetime.date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            on_click=save_on_download,
-            type="primary",
-            use_container_width=True
-        )
-    else:
-        st.button("💾 SALVA E SCARICA EXCEL", disabled=True, use_container_width=True)
-
-st.divider()
-with st.expander("🗄️ Area Amministrazione (Scarica Database)"):
-    if st.button("📥 SCARICA INTERO DATABASE"):
-        with st.spinner("Generazione Report Completo in corso..."):
-            full_db_data = download_full_db_excel()
-            if full_db_data:
-                st.download_button(
-                    label="💾 Clicca per Salvare Report Completo",
-                    data=full_db_data,
-                    file_name=f"Report_Galbino_{datetime.date.today()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+        # 2. Applicazione Gross Up (Dal Netto al Lordo Piattaforma)
+        if canale == "Airbnb (+15%)": 
+            # Netto = Lordo * 0.85  -->  Lordo = Netto / 0.85
+            affitto_calcolato = netto_reale / 0.85
+        elif canale == "Oliver's (+20%)": 
+            # Netto = Lordo * 0.80  -->  Lordo = Netto / 0.80
+            affitto_calcolato = netto_reale / 0.80
+        else: 
+            # Netto Galbino
+            affitto_calcolato = netto_reale
+    
+    st.markdown("### 🍷 Servizi")
+    dettagli_servizi_excel = {}
+    totale_servizi = 0
+    
+    for nome, prezzo_def in LISTA_SERVIZI:
+        with st.expander(f"{nome}"):
+            if "Wedding" in nome:
+                c1, c2 = st.columns(2)
+                p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
+                pax = c2.number_input("Invitati", min_value=0, key=f"x_{nome}")
+                qta = 1 
+            elif "Truffle" in nome:
+                c1, c2 = st.columns(2)
+                p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
+                pax = c2.number_input("Partecipanti", min_value=0, key=f"x_{nome}")
+                qta = 1
+            elif "Prima Spesa" in nome:
+                p_unit = st.number_input(f"Costo Scontrino", value=0.0, key=f"p_{nome}"); pax=1; qta=1
+            elif "Transfer" in nome or "Extra Cleaning" in nome:
+                c1, c2 = st.columns(2)
+                p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
+                pax = 1 
+                qta = c2.number_input(f"Quantità/Volte", min_value=0, key=f"q_{nome}")
             else:
-                st.error("Errore nel download o Database vuoto.")
+                c1, c2, c3 = st.columns(3)
+                p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
+                pax = c2.number_input("Pax", min_value=0, key=f"x_{nome}")
+                qta = c3.number_input("Qta", min_value=0, key=f"q_{nome}")
+            
+            if (("Prima Spesa" in nome and p_unit > 0) or (p_unit > 0 and pax > 0 and qta > 0)):
+                sub = p_unit * pax * qta
+                totale_servizi += sub
+                dettagli_servizi_excel[nome] = {'p_unit': p_unit, 'pax': pax, 'qta': qta, 'subtotale': sub}
+
+    st.divider()
+    c_f1, c_f2 = st.columns(2)
+    with c_f1: sconto = st.number_input("Sconto Manuale (€)", min_value=0.0, step=50.0)
+    with c_f2: note = st.text_area("Note interne")
+    
+    pulizie = 600
+    totale_gen = affitto_calcolato + pulizie + totale_servizi - sconto
+    costo_medio = affitto_calcolato / notti if notti > 0 else 0
+
+    st.markdown("### 💰 Preventivo Live")
+    k1, k2, k3 = st.columns(3)
+    k1.metric(f"Affitto ({canale})", f"€ {affitto_calcolato:,.2f}", delta=f"Tuo Netto: € {netto_reale:,.2f}")
+    k2.metric("Servizi", f"€ {totale_servizi:,.2f}")
+    k3.metric("TOTALE", f"€ {totale_gen:,.2f}")
+    
+    is_valid = True
+    if autore == "Seleziona...": is_valid=False
+    if notti < MIN_STAY: is_valid=False
+    
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("☁️ SALVA SOLO CLOUD", use_container_width=True):
+            if is_valid:
+                riga = [autore, canale, datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti, affitto_calcolato, costo_medio, pulizie]
+                for n, _ in LISTA_SERVIZI:
+                    if n in dettagli_servizi_excel: riga.extend([dettagli_servizi_excel[n]['p_unit'], dettagli_servizi_excel[n]['pax'], dettagli_servizi_excel[n]['qta'], dettagli_servizi_excel[n]['subtotale']])
+                    else: riga.extend([0,0,0,0])
+                riga.extend([sconto, totale_gen, note])
+                if salva_su_google_sheets(riga): st.toast("✅ Salvato!");
+            else: st.error("Dati incompleti")
+            
+    with b2:
+        if is_valid:
+            excel_data = generate_excel(autore, canale, cliente, checkin, checkout, notti, ospiti, affitto_calcolato, pulizie, dettagli_servizi_excel, sconto, totale_gen, costo_medio, note)
+            def callback_save():
+                riga = [autore, canale, datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti, affitto_calcolato, costo_medio, pulizie]
+                for n, _ in LISTA_SERVIZI:
+                    if n in dettagli_servizi_excel: riga.extend([dettagli_servizi_excel[n]['p_unit'], dettagli_servizi_excel[n]['pax'], dettagli_servizi_excel[n]['qta'], dettagli_servizi_excel[n]['subtotale']])
+                    else: riga.extend([0,0,0,0])
+                riga.extend([sconto, totale_gen, note])
+                salva_su_google_sheets(riga)
+                st.toast("✅ Salvato e Scaricato!")
+                
+            st.download_button("💾 SALVA E SCARICA", excel_data, f"Prev_{cliente}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", on_click=callback_save, type="primary", use_container_width=True)
+        else:
+             st.button("💾 SALVA E SCARICA", disabled=True, use_container_width=True)
+
+    if st.session_state['user_role'] == 'admin':
+        with st.expander("Admin: Gestione DB"):
+            if st.button("SCARICA DATABASE AFFITTI COMPLETO"):
+                db = download_full_db_excel()
+                if db: st.download_button("Download DB", db, f"DB_Affitti_{datetime.date.today()}.xlsx")
+
+# ==============================================================================
+# SEZIONE 3: APP CATERING MANAGER
+# ==============================================================================
+
+def app_catering_manager():
+    st.title(f"👨‍🍳 Catering Manager (Utente: {st.session_state['user_name']})")
+    
+    # --- DB CATERING ---
+    def salva_db_catering(riga):
+        try:
+            client = get_gspread_client()
+            url = st.secrets.get("spreadsheet_url_catering", st.secrets["spreadsheet_url"])
+            sheet = client.open_by_url(url).sheet1
+            sheet.append_row(riga)
+            return True
+        except Exception as e:
+            st.error(f"Errore DB Catering: {e}")
+            return False
+
+    def genera_excel_catering(cliente, data_evento, status, pax, prezzo, incasso_loc, tot_inc, fc, staff_tot, tot_costi, marg_eur, marg_perc, staff_list, menu, note):
+        output = io.BytesIO()
+        workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+        ws = workbook.add_worksheet("Catering")
+        fmt_head = workbook.add_format({'bold': True, 'bg_color': '#FFD700', 'border': 1})
+        fmt_curr = workbook.add_format({'num_format': '#,##0.00 €', 'border': 1})
+        
+        ws.write('A1', f"CATERING: {cliente}", fmt_head)
+        ws.write('B1', status, fmt_head)
+        
+        ws.write('A3', "Incasso Totale"); ws.write('B3', tot_inc, fmt_curr)
+        ws.write('A4', "Costi Totali"); ws.write('B4', tot_costi, fmt_curr)
+        ws.write('A5', "Margine €"); ws.write('B5', marg_eur, fmt_curr)
+        ws.write('A6', "Margine %"); ws.write('B6', marg_perc, workbook.add_format({'num_format': '0.00%'}))
+        
+        ws.write('A8', "DETTAGLIO STAFF", fmt_head)
+        for i, s in enumerate(staff_list): ws.write(8+i+1, 0, s)
+        
+        ws.write(8+len(staff_list)+2, 0, "MENU", fmt_head)
+        ws.write(8+len(staff_list)+3, 0, menu)
+        
+        workbook.close()
+        return output.getvalue()
+
+    c_status, c_cli = st.columns([1, 3])
+    with c_status: status_prev = st.radio("Status", ["PREVENTIVO", "CONSUNTIVO"], horizontal=True)
+    with c_cli: cliente = st.text_input("Evento / Cliente")
+    
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: data_evento = st.date_input("Data", datetime.date.today(), format="DD/MM/YYYY")
+    with c2: pax = st.number_input("Pax", 1, value=50)
+    with c3: tipo = st.selectbox("Tipo", ["Buffet", "Servito", "Cocktail"])
+    with c4: prezzo_pax = st.number_input("€/Pax", 0.0, value=80.0)
+    
+    incasso_loc = st.number_input("Incasso Extra/Location €", 0.0)
+    totale_incasso = (pax * prezzo_pax) + incasso_loc
+    st.metric("INCASSO PREVISTO", f"€ {totale_incasso:,.2f}")
+    
+    st.divider()
+    st.subheader("Costi")
+    
+    food_cost = st.number_input("Food Cost Totale €", 0.0, value=500.0)
+    if pax > 0: st.caption(f"Food Cost pax: € {food_cost/pax:.2f}")
+    
+    num_staff = st.number_input("N. Staff", 0, value=3)
+    costo_staff_tot = 0.0
+    staff_list = []
+    
+    if num_staff > 0:
+        cols = st.columns([2,2,1,1,1])
+        cols[0].write("Nome"); cols[1].write("Ruolo"); cols[2].write("Ore"); cols[3].write("€/h"); cols[4].write("Tot")
+        for i in range(int(num_staff)):
+            cc = st.columns([2,2,1,1,1])
+            nome = cc[0].text_input(f"n{i}", label_visibility="collapsed")
+            ruolo = cc[1].selectbox(f"r{i}", ["Cameriere", "Cuoco", "Extra"], label_visibility="collapsed")
+            ore = cc[2].number_input(f"o{i}", 0.0, value=6.0, step=0.5, label_visibility="collapsed")
+            paga = cc[3].number_input(f"p{i}", 0.0, value=10.0, label_visibility="collapsed")
+            tot = ore * paga
+            costo_staff_tot += tot
+            cc[4].write(f"€{tot:.0f}")
+            if nome: staff_list.append(f"{nome} ({ruolo}): {ore}h x {paga}€ = {tot}€")
+            
+    st.write(f"**Totale Staff: € {costo_staff_tot:,.2f}**")
+    
+    totale_costi = food_cost + costo_staff_tot
+    margine = totale_incasso - totale_costi
+    margine_perc = (margine / totale_incasso * 100) if totale_incasso > 0 else 0
+    
+    st.divider()
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Totale Costi", f"€ {totale_costi:,.2f}")
+    m2.metric("Margine €", f"€ {margine:,.2f}")
+    m3.metric("Margine %", f"{margine_perc:.1f}%", delta_color="normal" if margine_perc > 20 else "inverse")
+    
+    menu = st.text_area("Menu")
+    note = st.text_area("Note")
+    
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("☁️ SALVA CATERING"):
+            riga = [status_prev, data_evento.strftime("%d/%m/%Y"), cliente, tipo, pax, prezzo_pax, incasso_loc, totale_incasso, food_cost, costo_staff_tot, totale_costi, margine, f"{margine_perc:.2f}%", " | ".join(staff_list), menu, note]
+            if salva_db_catering(riga): st.toast("Salvato!")
+            
+    with b2:
+        exc = genera_excel_catering(cliente, data_evento, status_prev, pax, prezzo_pax, incasso_loc, totale_incasso, food_cost, costo_staff_tot, totale_costi, margine, margine_perc/100, staff_list, menu, note)
+        st.download_button("💾 SCARICA REPORT", exc, f"Cat_{cliente}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+# ==============================================================================
+# MAIN LOOP
+# ==============================================================================
+
+if check_login():
+    st.sidebar.title("Navigazione")
+    st.sidebar.write(f"Utente: **{st.session_state['user_name']}**")
+    
+    role = st.session_state['user_role']
+    app_mode = None
+    
+    if role == 'admin':
+        app_mode = st.sidebar.radio("Vai a:", ["🏰 Preventivi Affitto", "👨‍🍳 Catering Manager"])
+    elif role == 'affitti':
+        app_mode = "🏰 Preventivi Affitto"
+    elif role == 'catering':
+        app_mode = "👨‍🍳 Catering Manager"
+        
+    if st.sidebar.button("Esci"):
+        logout()
+
+    if app_mode == "🏰 Preventivi Affitto":
+        app_preventivi_affitto()
+    elif app_mode == "👨‍🍳 Catering Manager":
+        app_catering_manager()
