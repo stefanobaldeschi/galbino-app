@@ -74,8 +74,6 @@ def app_preventivi_affitto():
     ]
 
     # --- LISTINO PREZZI AIRBNB (LORDO) ---
-    # Usiamo le cifre tonde che generavano i calcoli corretti
-    # (Esempio: 1275 / 0.85 = 1500)
     RATES_AIRBNB = {
         "Alta": {"Base": 2000, "We": 3100, "CapienzaBase": 16, "Max": 24},
         "Media": {"Base": 1500, "We": 2200, "CapienzaBase": 16, "Max": 24},
@@ -250,21 +248,28 @@ def app_preventivi_affitto():
         with c_cli: cliente = st.text_input("Nome Cliente")
         
         c1, c2, c3 = st.columns(3)
-        with c1: checkin = st.date_input("Check-In", datetime.date.today(), format="DD/MM/YYYY")
-        with c2: checkout = st.date_input("Check-Out", datetime.date.today() + datetime.timedelta(days=MIN_STAY), format="DD/MM/YYYY")
+        with c1: 
+            checkin = st.date_input("Check-In", datetime.date.today(), format="DD/MM/YYYY")
+            
+        # CALCOLO DATA CHECKOUT DEFAULT (Così il calendario parte dal mese giusto)
+        default_checkout = checkin + datetime.timedelta(days=MIN_STAY)
+        
+        with c2: 
+            checkout = st.date_input("Check-Out", value=default_checkout, min_value=checkin + datetime.timedelta(days=1), format="DD/MM/YYYY")
+            
         with c3: ospiti = st.number_input("Ospiti", min_value=1, value=10)
 
     is_free, msg = check_availability(checkin, checkout, LODGIFY_ICAL_URL)
     if is_free: st.success("✅ DATE DISPONIBILI")
     else: st.error(f"⛔ {msg}")
 
-    # --- CALCOLO (PARTENDO DA LISTINO AIRBNB) ---
+    # --- CALCOLO AUTOMATICO (DEFAULT) ---
     notti = (checkout - checkin).days
     
-    # 1. Calcolo Prezzi Lordi Airbnb
+    # Calcolo Prezzi Lordi Airbnb (Listino)
     costo_affitto_listino, costo_extra_listino, log_affitto = calcola_soggiorno_airbnb(checkin, notti, ospiti)
     
-    # Variabili Finali
+    # Inizializzazione variabili
     prezzo_airbnb_totale = 0
     prezzo_diretto = 0
     netto_galbino_totale = 0
@@ -277,6 +282,21 @@ def app_preventivi_affitto():
         
         affitto_airbnb_finale = costo_affitto_listino
         
+    # --- POSSIBILITÀ DI OVERRIDE MANUALE ---
+    st.markdown("---")
+    col_manual, col_void = st.columns([1, 2])
+    with col_manual:
+        usa_manuale = st.checkbox("✍️ Inserisci Prezzo Airbnb Manuale?")
+    
+    if usa_manuale:
+        c_man_aff, c_void = st.columns(2)
+        with c_man_aff:
+            # Nota: L'utente inserisce qui SOLO la voce "Costo notti", non incluso pulizie
+            affitto_airbnb_finale = st.number_input("Totale 'Costo Notti' Airbnb (€)", value=11100.0, step=50.0, help="Inserisci il totale 'Costo Notti' che vedi su Airbnb (Escluse pulizie)")
+        costo_extra_listino = 0 # Se è manuale, assumiamo sia tutto incluso nel prezzo sopra
+        
+    # --- CALCOLI FINALI ---
+    if affitto_airbnb_finale > 0:
         # B. Totale Lordo Airbnb (Affitto + Extra + Pulizie)
         prezzo_airbnb_totale = affitto_airbnb_finale + costo_extra_listino + PULIZIE_AIRBNB
         
