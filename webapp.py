@@ -58,7 +58,7 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 # ==============================================================================
-# SEZIONE 2: APP PREVENTIVI AFFITTO
+# SEZIONE 2: APP PREVENTIVI AFFITTO (CASTLE RENTAL)
 # ==============================================================================
 
 def app_preventivi_affitto():
@@ -81,6 +81,10 @@ def app_preventivi_affitto():
     COSTO_EXTRA_PAX = 100
     SCONTO_LUNGA_DURATA = 0.15
     MIN_STAY = 3
+    
+    # --- NUOVE COSTANTI ---
+    AIRBNB_COMMISSION = 0.155  # 15.5%
+    PULIZIE_NETTE = 600
 
     def calcola_pasqua(anno):
         a, b, c = anno % 19, anno // 100, anno % 100
@@ -160,7 +164,7 @@ def app_preventivi_affitto():
             st.error(f"Errore DB Affitti: {e}")
             return False
             
-    def generate_excel(autore, canale, cliente, checkin, checkout, notti, ospiti, affitto_finale, pulizie, dettagli_servizi, sconto, totale_gen, costo_medio, note):
+    def generate_excel(autore, canale, cliente, checkin, checkout, notti, ospiti, affitto_finale, pulizie_finali, dettagli_servizi, sconto, totale_gen, costo_medio, note):
         output = io.BytesIO()
         workbook = xlsxwriter.Workbook(output, {'in_memory': True})
         worksheet = workbook.add_worksheet("Preventivo")
@@ -175,7 +179,7 @@ def app_preventivi_affitto():
         general_headers = ["Autore", "Canale", "Data Prev", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "Affitto", "Media/Notte", "Pulizie"]
         worksheet.write_row('A1', general_headers, bold)
         worksheet.write_row('A2', [autore, canale, datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti], normal)
-        worksheet.write('I2', affitto_finale, currency); worksheet.write('J2', costo_medio, currency); worksheet.write('K2', pulizie, currency)
+        worksheet.write('I2', affitto_finale, currency); worksheet.write('J2', costo_medio, currency); worksheet.write('K2', pulizie_finali, currency)
 
         col_idx = 11 
         for nome, _ in LISTA_SERVIZI:
@@ -212,16 +216,14 @@ def app_preventivi_affitto():
             return output.getvalue()
         except: return None
 
+    # --- UI AFFITTO ---
     with st.container():
-        c_aut, c_can, c_cli = st.columns([1, 1, 2])
+        c_aut, c_cli = st.columns([1, 2]) # Tolto selettore canale qui
         with c_aut: 
             current_user = st.session_state.get('user_name', 'Seleziona...')
             options_auth = ["Seleziona...", "Luca", "Stefano"]
             idx = options_auth.index(current_user) if current_user in options_auth else 0
             autore = st.selectbox("Autore", options_auth, index=idx)
-            
-        with c_can: 
-            canale = st.radio("Listino", ["Netto Galbino", "Airbnb (+15%)", "Oliver's (+20%)"], horizontal=True)
             
         with c_cli: cliente = st.text_input("Nome Cliente")
         
@@ -234,22 +236,28 @@ def app_preventivi_affitto():
     if is_free: st.success("✅ DATE DISPONIBILI")
     else: st.error(f"⛔ {msg}")
 
+    # --- CALCOLO NETTO BASE ---
     notti = (checkout - checkin).days
-    costo_netto_base, log_affitto = calcola_soggiorno_netto(checkin, notti, ospiti)
-    affitto_calcolato = 0
-    netto_reale = 0
-    sconto_long = 0
+    costo_netto_affitto, log_affitto = calcola_soggiorno_netto(checkin, notti, ospiti)
     
-    if notti >= MIN_STAY and costo_netto_base is not None:
-        netto_reale = costo_netto_base
+    # Inizializzazione variabili
+    prezzo_airbnb = 0
+    prezzo_diretto = 0
+    totale_netto_galbino = 0
+    
+    if notti >= MIN_STAY and costo_netto_affitto is not None:
+        # Sconto lunga durata su NETTO
         if notti >= 7:
-            sconto_long = costo_netto_base * SCONTO_LUNGA_DURATA
-            netto_reale = costo_netto_base - sconto_long
+            costo_netto_affitto -= (costo_netto_affitto * SCONTO_LUNGA_DURATA)
         
-        if canale == "Airbnb (+15%)": affitto_calcolato = netto_reale / 0.85
-        elif canale == "Oliver's (+20%)": affitto_calcolato = netto_reale / 0.80
-        else: affitto_calcolato = netto_reale
-    
+        totale_netto_galbino = costo_netto_affitto + PULIZIE_NETTE
+        
+        # --- CALCOLO AIRBNB (Gross Up) ---
+        # Formula: Gross = Net / (1 - Commission)
+        # Airbnb prende commissione su TUTTO (Affitto + Pulizie)
+        fattore_gross_up = 1 / (1 - AIRBNB_COMMISSION)
+        prezzo_airbnb = totale_netto_galbino * fattore_gross_up
+        
     st.markdown("### 🍷 Servizi")
     dettagli_servizi_excel = {}
     totale_servizi = 0
@@ -285,20 +293,59 @@ def app_preventivi_affitto():
                 dettagli_servizi_excel[nome] = {'p_unit': p_unit, 'pax': pax, 'qta': qta, 'subtotale': sub}
 
     st.divider()
-    c_f1, c_f2 = st.columns(2)
-    with c_f1: sconto = st.number_input("Sconto Manuale (€)", min_value=0.0, step=50.0)
-    with c_f2: note = st.text_area("Note interne")
     
-    pulizie = 600
-    totale_gen = affitto_calcolato + pulizie + totale_servizi - sconto
-    costo_medio = affitto_calcolato / notti if notti > 0 else 0
+    # --- INPUT SCONTO DIRETTO (VARIABILE) ---
+    c_sconto_dir, c_sconto_man, c_note = st.columns([1, 1, 2])
+    with c_sconto_dir:
+        perc_sconto_diretto = st.number_input("% Sconto Diretto (vs Airbnb)", value=5.0, step=0.5)
+    with c_sconto_man:
+        sconto = st.number_input("Sconto Manuale Extra (€)", min_value=0.0, step=50.0)
+    with c_note:
+        note = st.text_area("Note interne")
+        
+    # --- CALCOLO PREZZO DIRETTO ---
+    prezzo_diretto = prezzo_airbnb * (1 - (perc_sconto_diretto / 100))
 
-    st.markdown("### 💰 Preventivo Live")
+    # --- VISUALIZZAZIONE COMPARATA ---
+    st.markdown("### 💰 Preventivo Comparato (Affitto + Pulizie)")
     k1, k2, k3 = st.columns(3)
-    k1.metric(f"Affitto ({canale})", f"€ {affitto_calcolato:,.2f}", delta=f"Tuo Netto: € {netto_reale:,.2f}")
-    k2.metric("Servizi", f"€ {totale_servizi:,.2f}")
-    k3.metric("TOTALE", f"€ {totale_gen:,.2f}")
+    k1.metric("1. NETTO GALBINO", f"€ {totale_netto_galbino:,.2f}", help="Affitto Netto + 600€ Pulizie Nette")
+    k2.metric(f"2. PREZZO AIRBNB (+{AIRBNB_COMMISSION*100}%)", f"€ {prezzo_airbnb:,.2f}", delta="Prezzo Lordo Portale")
+    k3.metric(f"3. PREZZO DIRETTO (-{perc_sconto_diretto}%)", f"€ {prezzo_diretto:,.2f}", delta="Rispetto ad Airbnb", delta_color="inverse")
     
+    st.divider()
+    st.info(f"Totale Servizi Extra: € {totale_servizi:,.2f}")
+
+    # --- SELEZIONE COSA SALVARE ---
+    st.markdown("#### 💾 Salvataggio")
+    scelta_salvataggio = st.radio("Quale proposta vuoi salvare/esportare?", ["Prezzo Airbnb", "Prezzo Diretto", "Solo Netto"], horizontal=True)
+
+    # Determina i valori finali in base alla scelta
+    affitto_da_salvare = 0
+    pulizie_da_salvare = 0
+    canale_str = ""
+    
+    fattore_gross = 1 / (1 - AIRBNB_COMMISSION)
+    
+    if scelta_salvataggio == "Prezzo Airbnb":
+        # Salviamo il lordo. Per coerenza DB, grossiamo sia affitto che pulizie
+        affitto_da_salvare = costo_netto_affitto * fattore_gross
+        pulizie_da_salvare = PULIZIE_NETTE * fattore_gross
+        canale_str = "Airbnb"
+    elif scelta_salvataggio == "Prezzo Diretto":
+        # Applichiamo lo sconto al lordo airbnb
+        fattore_sconto = (1 - (perc_sconto_diretto / 100))
+        affitto_da_salvare = (costo_netto_affitto * fattore_gross) * fattore_sconto
+        pulizie_da_salvare = (PULIZIE_NETTE * fattore_gross) * fattore_sconto
+        canale_str = f"Diretto (-{perc_sconto_diretto}%)"
+    else:
+        affitto_da_salvare = costo_netto_affitto
+        pulizie_da_salvare = PULIZIE_NETTE
+        canale_str = "Netto Interno"
+        
+    totale_finale_doc = affitto_da_salvare + pulizie_da_salvare + totale_servizi - sconto
+    costo_medio_doc = affitto_da_salvare / notti if notti > 0 else 0
+
     is_valid = True
     if autore == "Seleziona...": is_valid=False
     if notti < MIN_STAY: is_valid=False
@@ -307,27 +354,27 @@ def app_preventivi_affitto():
     with b1:
         if st.button("☁️ SALVA SOLO CLOUD", use_container_width=True):
             if is_valid:
-                riga = [autore, canale, datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti, affitto_calcolato, costo_medio, pulizie]
+                riga = [autore, canale_str, datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti, affitto_da_salvare, costo_medio_doc, pulizie_da_salvare]
                 for n, _ in LISTA_SERVIZI:
                     if n in dettagli_servizi_excel: riga.extend([dettagli_servizi_excel[n]['p_unit'], dettagli_servizi_excel[n]['pax'], dettagli_servizi_excel[n]['qta'], dettagli_servizi_excel[n]['subtotale']])
                     else: riga.extend([0,0,0,0])
-                riga.extend([sconto, totale_gen, note])
-                if salva_su_google_sheets(riga): st.toast("✅ Salvato!");
+                riga.extend([sconto, totale_finale_doc, note])
+                if salva_su_google_sheets(riga): st.toast(f"✅ Salvato preventivo {canale_str}!");
             else: st.error("Dati incompleti")
             
     with b2:
         if is_valid:
-            excel_data = generate_excel(autore, canale, cliente, checkin, checkout, notti, ospiti, affitto_calcolato, pulizie, dettagli_servizi_excel, sconto, totale_gen, costo_medio, note)
+            excel_data = generate_excel(autore, canale_str, cliente, checkin, checkout, notti, ospiti, affitto_da_salvare, pulizie_da_salvare, dettagli_servizi_excel, sconto, totale_finale_doc, costo_medio_doc, note)
             def callback_save():
-                riga = [autore, canale, datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti, affitto_calcolato, costo_medio, pulizie]
+                riga = [autore, canale_str, datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti, affitto_da_salvare, costo_medio_doc, pulizie_da_salvare]
                 for n, _ in LISTA_SERVIZI:
                     if n in dettagli_servizi_excel: riga.extend([dettagli_servizi_excel[n]['p_unit'], dettagli_servizi_excel[n]['pax'], dettagli_servizi_excel[n]['qta'], dettagli_servizi_excel[n]['subtotale']])
                     else: riga.extend([0,0,0,0])
-                riga.extend([sconto, totale_gen, note])
+                riga.extend([sconto, totale_finale_doc, note])
                 salva_su_google_sheets(riga)
-                st.toast("✅ Salvato e Scaricato!")
+                st.toast(f"✅ Salvato e Scaricato ({canale_str})!")
                 
-            st.download_button("💾 SALVA E SCARICA", excel_data, f"Prev_{cliente}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", on_click=callback_save, type="primary", use_container_width=True)
+            st.download_button("💾 SALVA E SCARICA", excel_data, f"Prev_{cliente}_{canale_str}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", on_click=callback_save, type="primary", use_container_width=True)
         else:
              st.button("💾 SALVA E SCARICA", disabled=True, use_container_width=True)
 
