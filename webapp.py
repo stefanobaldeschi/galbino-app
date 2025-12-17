@@ -73,20 +73,22 @@ def app_preventivi_affitto():
         ("Prima Spesa", 0), ("Extra Cleaning", 200)
     ]
 
-    # QUESTI SONO I TUOI NETTI BASE (Senza Commissioni)
-    RATES_NETTO = {
-        "Alta": {"Base": 1700, "We": 2635, "CapienzaBase": 16, "Max": 24},
-        "Media": {"Base": 1275, "We": 1870, "CapienzaBase": 16, "Max": 24},
-        "Bassa": {"Base": 1020, "We": 1020, "CapienzaBase": 10, "Max": 22}
+    # --- LISTINO PREZZI AIRBNB (LORDO) ---
+    # Usiamo le cifre tonde che generavano i calcoli corretti
+    # (Esempio: 1275 / 0.85 = 1500)
+    RATES_AIRBNB = {
+        "Alta": {"Base": 2000, "We": 3100, "CapienzaBase": 16, "Max": 24},
+        "Media": {"Base": 1500, "We": 2200, "CapienzaBase": 16, "Max": 24},
+        "Bassa": {"Base": 1200, "We": 1200, "CapienzaBase": 10, "Max": 22}
     }
     
-    # QUESTI SONO PREZZI LORDI AIRBNB (NON vengono maggiorati)
+    # COSTI ACCESSORI (Prezzi Airbnb)
     COSTO_EXTRA_PAX_AIRBNB = 100
     PULIZIE_AIRBNB = 600 
     
-    # PARAMETRI
-    AIRBNB_COMMISSION = 0.155  # 15.5%
-    SCONTO_LUNGA_DURATA = 0.15
+    # PARAMETRI CALCOLO
+    AIRBNB_COMMISSION = 0.155  # 15.5% (Trattenuta da Airbnb su TUTTO)
+    SCONTO_LUNGA_DURATA = 0.15 # Sconto settimanale
     MIN_STAY = 3
     
     def calcola_pasqua(anno):
@@ -121,36 +123,35 @@ def app_preventivi_affitto():
         if (inizio_media_1 <= data < inizio_alta) or (ultimo_lun_luglio <= data <= fine_media_2) or (inizio_media_3 <= data <= terza_dom_ott): return "Media"
         return "Bassa"
 
-    # Funzione che restituisce separatamente Affitto Netto e Extra Lordi
-    def calcola_componenti_soggiorno(data_arrivo, notti, ospiti):
-        tot_netto_affitto = 0
-        tot_lordo_extra = 0
+    # Funzione che calcola il PREZZO LISTINO AIRBNB (LORDO)
+    def calcola_soggiorno_airbnb(data_arrivo, notti, ospiti):
+        tot_affitto = 0
+        tot_extra = 0
         log = []
         
         for i in range(notti):
             giorno = data_arrivo + datetime.timedelta(days=i)
             stg = get_stagione(giorno)
             tipo = "We" if giorno.weekday() in [3,4,5,6] else "Base"
-            tariffa_base = RATES_NETTO[stg]
+            tariffa_base = RATES_AIRBNB[stg]
             
             # Controllo Max Ospiti
             if ospiti > tariffa_base["Max"]: 
                 return None, None, f"Troppi ospiti per {stg} (Max {tariffa_base['Max']})"
             
-            # Calcolo Affitto Netto (Base)
-            prezzo_base_netto = tariffa_base[tipo]
+            # Calcolo Affitto Base (Listino)
+            prezzo_base = tariffa_base[tipo]
             
-            # Calcolo Extra Pax Lordo (Fisso)
+            # Calcolo Extra Pax (Listino)
             pax_eccedenti = max(0, ospiti - tariffa_base["CapienzaBase"])
-            costo_extra_lordo = pax_eccedenti * COSTO_EXTRA_PAX_AIRBNB
+            costo_extra = pax_eccedenti * COSTO_EXTRA_PAX_AIRBNB
             
-            tot_netto_affitto += prezzo_base_netto
-            tot_lordo_extra += costo_extra_lordo
+            tot_affitto += prezzo_base
+            tot_extra += costo_extra
             
-            # Log semplice
-            log.append(f"{giorno.strftime('%d/%m')}: Base(N) €{prezzo_base_netto} + Extra(L) €{costo_extra_lordo}")
+            log.append(f"{giorno.strftime('%d/%m')}: Base €{prezzo_base} + Extra €{costo_extra}")
             
-        return tot_netto_affitto, tot_lordo_extra, log
+        return tot_affitto, tot_extra, log
 
     def check_availability(checkin, checkout, url):
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -257,33 +258,31 @@ def app_preventivi_affitto():
     if is_free: st.success("✅ DATE DISPONIBILI")
     else: st.error(f"⛔ {msg}")
 
-    # --- CALCOLO MISTO ---
+    # --- CALCOLO (PARTENDO DA LISTINO AIRBNB) ---
     notti = (checkout - checkin).days
     
-    # 1. Otteniamo Netto Base e Extra Lordi
-    tot_affitto_netto_base, tot_extra_pax_lordo, log_affitto = calcola_componenti_soggiorno(checkin, notti, ospiti)
+    # 1. Calcolo Prezzi Lordi Airbnb
+    costo_affitto_listino, costo_extra_listino, log_affitto = calcola_soggiorno_airbnb(checkin, notti, ospiti)
     
     # Variabili Finali
-    prezzo_airbnb = 0
+    prezzo_airbnb_totale = 0
     prezzo_diretto = 0
     netto_galbino_totale = 0
-    affitto_airbnb_calcolato = 0
+    affitto_airbnb_finale = 0
     
-    if notti >= MIN_STAY and tot_affitto_netto_base is not None:
-        # A. Sconto Lunga Durata (Si applica al Netto Base)
+    if notti >= MIN_STAY and costo_affitto_listino is not None:
+        # A. Sconto Lunga Durata (Su Listino Airbnb)
         if notti >= 7:
-            tot_affitto_netto_base -= (tot_affitto_netto_base * SCONTO_LUNGA_DURATA)
+            costo_affitto_listino -= (costo_affitto_listino * SCONTO_LUNGA_DURATA)
         
-        # B. Calcolo Affitto Airbnb (Scorporo)
-        # Netto = Airbnb * (1 - 0.155)  => Airbnb = Netto / (1 - 0.155)
-        affitto_airbnb_calcolato = tot_affitto_netto_base / (1 - AIRBNB_COMMISSION)
+        affitto_airbnb_finale = costo_affitto_listino
         
-        # C. Totale Lordo Airbnb (Affitto Maggiorato + Extra Fissi + Pulizie Fisse)
-        prezzo_airbnb = affitto_airbnb_calcolato + tot_extra_pax_lordo + PULIZIE_AIRBNB
+        # B. Totale Lordo Airbnb (Affitto + Extra + Pulizie)
+        prezzo_airbnb_totale = affitto_airbnb_finale + costo_extra_listino + PULIZIE_AIRBNB
         
-        # D. Netto Galbino Reale
-        # Airbnb prende il 15.5% su TUTTO il lordo
-        netto_galbino_totale = prezzo_airbnb * (1 - AIRBNB_COMMISSION)
+        # C. Netto Galbino Reale
+        # Airbnb trattiene 15.5% su TUTTO (Affitto + Pulizie + Extra)
+        netto_galbino_totale = prezzo_airbnb_totale * (1 - AIRBNB_COMMISSION)
         
     st.markdown("### 🍷 Servizi")
     dettagli_servizi_excel = {}
@@ -331,13 +330,14 @@ def app_preventivi_affitto():
         note = st.text_area("Note interne")
         
     # --- CALCOLO PREZZO DIRETTO ---
-    prezzo_diretto = prezzo_airbnb * (1 - (perc_sconto_diretto / 100))
+    # Sconto sul prezzo Airbnb Totale
+    prezzo_diretto = prezzo_airbnb_totale * (1 - (perc_sconto_diretto / 100))
 
     # --- VISUALIZZAZIONE COMPARATA ---
     st.markdown("### 💰 Preventivo Comparato")
     k1, k2, k3 = st.columns(3)
-    k1.metric("1. NETTO GALBINO", f"€ {netto_galbino_totale:,.2f}", delta="Cassa Reale", delta_color="off", help="Questo è il bonifico netto atteso da Airbnb (Tutto il lordo meno il 15.5%)")
-    k2.metric(f"2. PREZZO AIRBNB", f"€ {prezzo_airbnb:,.2f}", help=f"Affitto Maggiorato + Extra/Pulizie Fissi")
+    k1.metric("1. NETTO GALBINO", f"€ {netto_galbino_totale:,.2f}", delta="Cassa Reale (-15.5%)", delta_color="off", help="Questo è il bonifico netto atteso da Airbnb")
+    k2.metric(f"2. PREZZO AIRBNB", f"€ {prezzo_airbnb_totale:,.2f}", help=f"Affitto + Extra + {PULIZIE_AIRBNB}€ Pulizie")
     k3.metric(f"3. PREZZO DIRETTO (-{perc_sconto_diretto}%)", f"€ {prezzo_diretto:,.2f}", delta="vs Airbnb", delta_color="inverse")
     
     st.divider()
@@ -352,18 +352,17 @@ def app_preventivi_affitto():
     canale_str = ""
     
     if scelta_salvataggio == "Prezzo Airbnb":
-        affitto_da_salvare = affitto_airbnb_calcolato + tot_extra_pax_lordo
+        affitto_da_salvare = affitto_airbnb_finale + costo_extra_listino
         pulizie_da_salvare = PULIZIE_AIRBNB
         canale_str = "Airbnb"
     elif scelta_salvataggio == "Prezzo Diretto":
-        # Applichiamo sconto % su tutto il pacchetto Airbnb
         fattore_sconto = (1 - (perc_sconto_diretto / 100))
-        affitto_da_salvare = (affitto_airbnb_calcolato + tot_extra_pax_lordo) * fattore_sconto
+        affitto_da_salvare = (affitto_airbnb_finale + costo_extra_listino) * fattore_sconto
         pulizie_da_salvare = PULIZIE_AIRBNB * fattore_sconto
         canale_str = f"Diretto (-{perc_sconto_diretto}%)"
     else:
-        # Netto Reale (quindi Airbnb * 0.845)
-        affitto_da_salvare = (affitto_airbnb_calcolato + tot_extra_pax_lordo) * (1 - AIRBNB_COMMISSION)
+        # Netto Reale (Airbnb * 0.845)
+        affitto_da_salvare = (affitto_airbnb_finale + costo_extra_listino) * (1 - AIRBNB_COMMISSION)
         pulizie_da_salvare = PULIZIE_AIRBNB * (1 - AIRBNB_COMMISSION)
         canale_str = "Netto Interno"
         
