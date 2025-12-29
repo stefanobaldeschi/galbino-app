@@ -105,20 +105,43 @@ def app_preventivi_affitto():
     def get_stagione(data):
         anno = data.year
         dt_pasqua = calcola_pasqua(anno)
+        
+        # 1. Pasqua -> Media
         if (dt_pasqua - datetime.timedelta(days=5)) <= data <= (dt_pasqua + datetime.timedelta(days=2)): return "Media"
+        
+        # 2. Natale/Capodanno -> Media
         if datetime.date(anno, 12, 20) <= data <= datetime.date(anno, 12, 31) or datetime.date(anno, 1, 1) <= data <= datetime.date(anno, 1, 6): return "Media"
+        
+        # 3. Alta Stagione Standard (Giugno-Luglio)
         maggio_31 = datetime.date(anno, 5, 31)
         inizio_alta = maggio_31 - datetime.timedelta(days=(maggio_31.weekday() - 3) % 7)
         luglio_31 = datetime.date(anno, 7, 31)
         ultimo_lun_luglio = luglio_31 - datetime.timedelta(days=luglio_31.weekday())
         fine_alta = ultimo_lun_luglio - datetime.timedelta(days=1)
+        
         if inizio_alta <= data <= fine_alta: return "Alta"
+
+        # 4. NUOVA REGOLA: Settembre Alta Stagione DAL 2027
+        if anno >= 2027 and data.month == 9:
+            return "Alta"
+
+        # 5. Media Stagione (range rimanenti)
         inizio_media_1 = datetime.date(anno, 4, 1)
         fine_media_2 = datetime.date(anno, 8, 31)
-        inizio_media_3 = datetime.date(anno, 9, 1)
+        
+        # Definizione Autunno Media
+        # Se è < 2027: Settembre (1/9) è Media.
+        # Se è >= 2027: Settembre è Alta, quindi Media parte da Ottobre (1/10).
+        start_autunno_media = datetime.date(anno, 9, 1)
+        if anno >= 2027:
+            start_autunno_media = datetime.date(anno, 10, 1)
+
         primo_ott = datetime.date(anno, 10, 1)
         terza_dom_ott = primo_ott + datetime.timedelta(days=(6 - primo_ott.weekday()) % 7) + datetime.timedelta(days=14)
-        if (inizio_media_1 <= data < inizio_alta) or (ultimo_lun_luglio <= data <= fine_media_2) or (inizio_media_3 <= data <= terza_dom_ott): return "Media"
+        
+        if (inizio_media_1 <= data < inizio_alta) or (ultimo_lun_luglio <= data <= fine_media_2) or (start_autunno_media <= data <= terza_dom_ott):
+             return "Media"
+             
         return "Bassa"
 
     # Funzione che calcola il PREZZO LISTINO AIRBNB (LORDO)
@@ -134,7 +157,6 @@ def app_preventivi_affitto():
             tariffa_base = RATES_AIRBNB[stg]
             
             # --- MODIFICA ANTI-CRASH: Rimosso blocco rigido su Max Ospiti ---
-            # Se ospiti > Max, calcoliamo comunque l'extra senza restituire errore
             if ospiti > tariffa_base["Max"]:
                  log.append(f"⚠️ {giorno.strftime('%d/%m')}: {ospiti} pax > max ({tariffa_base['Max']})")
             
