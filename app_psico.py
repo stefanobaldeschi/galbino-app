@@ -1,180 +1,66 @@
 import streamlit as st
-import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import time
+import pandas as pd
 
-# --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="Diario Clinico", page_icon="🧠", layout="centered")
+st.set_page_config(layout="wide")
 
-# ==============================================================================
-# 1. COLLEGAMENTO DATABASE
-# ==============================================================================
-def get_db():
-    try:
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds_dict = dict(st.secrets["psico_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
-        return client.open_by_url(st.secrets["psico"]["spreadsheet_url"])
-    except Exception as e:
-        st.error(f"Errore nei Secrets: {e}")
-        st.stop()
+# TITOLO GIGANTE PER CONFERMARE L'AGGIORNAMENTO
+st.title("🛠️ PAGINA DI TEST CONNESSIONE")
+st.subheader("Se leggi questo, il codice è aggiornato!")
 
-# ==============================================================================
-# 2. LOGICA INTELLIGENTE CON "SPIA" (DEBUG)
-# ==============================================================================
-def get_dati_intelligenti(sheet_diario, sh_generale):
-    
-    pazienti_last_date = {}
-    pazienti_last_price = {}
-    nomi_anagrafica = []
-    
-    # Variabile per la SPIA (raccoglie i messaggi di debug)
-    debug_log = []
+# 1. CONNESSIONE
+try:
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    creds_dict = dict(st.secrets["psico_service_account"])
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    client = gspread.authorize(creds)
+    # Apre il foglio
+    sh = client.open_by_url(st.secrets["psico"]["spreadsheet_url"])
+    st.success("✅ Connessione al File Google riuscita!")
+except Exception as e:
+    st.error(f"❌ Errore Connessione: {e}")
+    st.stop()
 
-    # --- FASE A: LEGGI ANAGRAFICA (Foglio Pazienti) ---
-    try:
-        ws_pazienti = sh_generale.worksheet("Pazienti")
-        dati_pazienti = ws_pazienti.get_all_values()
-        
-        # Salta intestazione (riga 1)
-        for i, row in enumerate(dati_pazienti[1:]):
-            # i+2 perché partiamo dalla riga 2 del foglio reale
-            if len(row) >= 1:
-                nome = row[0].strip()
-                if nome:
-                    nomi_anagrafica.append(nome)
-                    
-                    # Cerca il prezzo nella colonna B (indice 1)
-                    prezzo_raw = "Nessuno"
-                    if len(row) >= 2:
-                        prezzo_raw = row[1] # Legge quello che c'è scritto
-                        
-                        try:
-                            # Pulisce: toglie €, spazi e converte virgola in punto
-                            p_clean = row[1].replace("€", "").replace(",", ".").strip()
-                            if p_clean:
-                                p_base = float(p_clean)
-                                pazienti_last_price[nome] = p_base
-                                debug_log.append(f"✅ Riga {i+2}: {nome} -> Letto: {p_base} (Scritto nel foglio: '{row[1]}')")
-                            else:
-                                debug_log.append(f"❌ Riga {i+2}: {nome} -> Prezzo vuoto")
-                        except:
-                            debug_log.append(f"⚠️ Riga {i+2}: {nome} -> Errore lettura prezzo '{row[1]}'")
-                    else:
-                        debug_log.append(f"❌ Riga {i+2}: {nome} -> Manca Colonna B")
-    except Exception as e:
-        debug_log.append(f"🔥 Errore generale leggendo foglio Pazienti: {e}")
-
-    # --- FASE B: LEGGI LO STORICO (Diario) ---
-    data_diario = sheet_diario.get_all_values()
-    for row in data_diario[1:]:
-        if len(row) > 3:
-            data_str, nome = row[0], row[1].strip()
-            prezzo_str = row[3].replace("€", "").replace(",", ".").strip()
-            
-            if nome and data_str:
-                try:
-                    dt = datetime.datetime.strptime(data_str, "%d/%m/%Y").date()
-                    if nome not in pazienti_last_date or dt > pazienti_last_date[nome]:
-                        pazienti_last_date[nome] = dt
-                    
-                    # Lo storico sovrascrive l'anagrafica (è più recente)
-                    if prezzo_str:
-                        valore = float(prezzo_str)
-                        if valore > 0:
-                            pazienti_last_price[nome] = valore
-                except:
-                    pass
-
-    # --- FASE C: UNIONE ---
-    oggi = datetime.date.today()
-    attivi_set = set(nomi_anagrafica)
-    for p, data_ult in pazienti_last_date.items():
-        if (oggi - data_ult).days <= 90:
-            attivi_set.add(p)
-            
-    attivi = list(attivi_set)
-    attivi.sort()
-    storico = list(set(list(pazienti_last_date.keys()) + nomi_anagrafica))
-    storico.sort()
-            
-    return attivi, storico, pazienti_last_price, debug_log
-
-# ==============================================================================
-# 3. INTERFACCIA UTENTE
-# ==============================================================================
-st.title("🧠 Diario Clinico")
+# 2. LETTURA FOGLIO PAZIENTI
+st.write("---")
+st.write("### Tentativo lettura foglio 'Pazienti'...")
 
 try:
-    sh = get_db()
-    ws_diario = sh.worksheet("Diario")
-    attivi, storico, memoria_prezzi, debug_info = get_dati_intelligenti(ws_diario, sh)
+    ws = sh.worksheet("Pazienti")
+    st.success("✅ Foglio 'Pazienti' trovato!")
     
-    # --- DEBUGGER: MOSTRA COSA HA LETTO (SOLO PER ORA) ---
-    with st.expander("🕵️ SPIA DATI (Clicca per vedere se legge i prezzi)", expanded=False):
-        st.write("Ecco cosa ho letto nel foglio Pazienti:")
-        for msg in debug_info:
-            if "✅" in msg:
-                st.success(msg)
-            elif "⚠️" in msg:
-                st.warning(msg)
-            else:
-                st.error(msg)
+    # Legge tutto il contenuto grezzo
+    dati = ws.get_all_values()
     
-    # --- FORM ---
-    data_seduta = st.date_input("Data Seduta", datetime.date.today(), format="DD/MM/YYYY")
-    st.write("")
+    st.write(f"Ho trovato {len(dati)} righe totali.")
     
-    scelta = st.radio("Paziente", ["Lista Attiva", "Archivio", "➕ Nuovo"], horizontal=True, label_visibility="collapsed")
-    
-    paziente = ""
-    if scelta == "Lista Attiva":
-        if attivi:
-            paziente = st.selectbox("Seleziona", attivi)
-        else:
-            st.warning("Lista vuota. Controlla la 'Spia' qui sopra.")
-    elif scelta == "Archivio":
-        if storico:
-            paziente = st.selectbox("Cerca archivio", storico)
-        else:
-            st.warning("Archivio vuoto.")
-    else:
-        paziente = st.text_input("Nome Nuovo Paziente").strip()
+    if len(dati) > 0:
+        st.write("Ecco esattamente cosa vedo nelle celle (Tabella Grezza):")
+        # Mostra i dati come tabella
+        df = pd.DataFrame(dati)
+        st.dataframe(df)
         
-    st.write("")
-    
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        tipo = st.radio("Modalità", ["Presenza", "Online"])
-    with c2:
-        prezzo_suggerito = 0.0
-        msg_help = "Inserisci importo"
-        
-        # Logica Suggerimento
-        if paziente in memoria_prezzi and scelta != "➕ Nuovo":
-            prezzo_suggerito = memoria_prezzi[paziente]
-            msg_help = f"Prezzo rilevato: € {prezzo_suggerito:.2f}"
+        st.write("---")
+        st.write("### Analisi Prezzi (Colonna B)")
+        # Prova a leggere i prezzi
+        for i, riga in enumerate(dati[1:]): # Salta intestazione
+            nome = riga[0] if len(riga) > 0 else "NOME MANCANTE"
+            prezzo_raw = riga[1] if len(riga) > 1 else "VUOTO"
             
-        prezzo = st.number_input("Prezzo (€)", min_value=0.0, value=prezzo_suggerito, step=5.0, help=msg_help)
+            msg = f"Riga {i+2}: Paziente **{nome}** - Prezzo letto: **'{prezzo_raw}'**"
+            
+            # Test di conversione numero
+            try:
+                p_clean = prezzo_raw.replace("€", "").replace(",", ".").strip()
+                valore = float(p_clean)
+                st.info(f"{msg} -> ✅ Numero valido: {valore}")
+            except:
+                st.error(f"{msg} -> ❌ Non riesco a capire che numero sia.")
+                
+    else:
+        st.warning("Il foglio 'Pazienti' è completamente bianco!")
 
-    note = st.text_area("Note", height=80)
-    st.divider()
-    
-    if st.button("💾 REGISTRA SEDUTA", type="primary", use_container_width=True, disabled=(not paziente or prezzo == 0)):
-        riga = [
-            data_seduta.strftime("%d/%m/%Y"),
-            paziente,
-            tipo,
-            f"{prezzo:.2f}".replace(".", ","),
-            note,
-            "DA FARE"
-        ]
-        ws_diario.append_row(riga)
-        st.success(f"✅ Salvato: {paziente} - € {prezzo}")
-        time.sleep(1.5)
-        st.rerun()
-        
 except Exception as e:
-    st.error(f"Errore Critico: {e}")
+    st.error(f"❌ ERRORE LETTURA FOGLIO PAZIENTI: {e}")
+    st.info("Suggerimento: Controlla che il foglio si chiami esattamente 'Pazienti' (con la P maiuscola).")
