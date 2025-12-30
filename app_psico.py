@@ -22,58 +22,65 @@ def get_db():
         st.stop()
 
 # ==============================================================================
-# 2. LOGICA INTELLIGENTE (Prezzi da Anagrafica + Storico)
+# 2. LOGICA INTELLIGENTE CON "SPIA" (DEBUG)
 # ==============================================================================
 def get_dati_intelligenti(sheet_diario, sh_generale):
     
     pazienti_last_date = {}
-    pazienti_last_price = {} # Qui memorizziamo i prezzi
+    pazienti_last_price = {}
     nomi_anagrafica = []
+    
+    # Variabile per la SPIA (raccoglie i messaggi di debug)
+    debug_log = []
 
-    # --- FASE A: LEGGI ANAGRAFICA E PREZZI BASE ---
+    # --- FASE A: LEGGI ANAGRAFICA (Foglio Pazienti) ---
     try:
         ws_pazienti = sh_generale.worksheet("Pazienti")
-        # Prende tutte le colonne (A=Nome, B=Prezzo)
         dati_pazienti = ws_pazienti.get_all_values()
         
         # Salta intestazione (riga 1)
-        for row in dati_pazienti[1:]:
-            if len(row) >= 1: # Se c'è almeno il nome
+        for i, row in enumerate(dati_pazienti[1:]):
+            # i+2 perché partiamo dalla riga 2 del foglio reale
+            if len(row) >= 1:
                 nome = row[0].strip()
                 if nome:
                     nomi_anagrafica.append(nome)
                     
-                    # Se c'è anche il prezzo nella colonna B (indice 1)
-                    if len(row) >= 2 and row[1].strip():
+                    # Cerca il prezzo nella colonna B (indice 1)
+                    prezzo_raw = "Nessuno"
+                    if len(row) >= 2:
+                        prezzo_raw = row[1] # Legge quello che c'è scritto
+                        
                         try:
-                            # Pulisce il prezzo (toglie € e virgole)
-                            p_base = float(row[1].replace("€", "").replace(",", ".").strip())
-                            if p_base > 0:
+                            # Pulisce: toglie €, spazi e converte virgola in punto
+                            p_clean = row[1].replace("€", "").replace(",", ".").strip()
+                            if p_clean:
+                                p_base = float(p_clean)
                                 pazienti_last_price[nome] = p_base
+                                debug_log.append(f"✅ Riga {i+2}: {nome} -> Letto: {p_base} (Scritto nel foglio: '{row[1]}')")
+                            else:
+                                debug_log.append(f"❌ Riga {i+2}: {nome} -> Prezzo vuoto")
                         except:
-                            pass # Se il prezzo è scritto male, lo ignora
-    except:
-        pass # Se il foglio Pazienti non esiste o è vuoto, amen
+                            debug_log.append(f"⚠️ Riga {i+2}: {nome} -> Errore lettura prezzo '{row[1]}'")
+                    else:
+                        debug_log.append(f"❌ Riga {i+2}: {nome} -> Manca Colonna B")
+    except Exception as e:
+        debug_log.append(f"🔥 Errore generale leggendo foglio Pazienti: {e}")
 
-    # --- FASE B: LEGGI LO STORICO (Sovrascrive con l'ultimo prezzo reale) ---
+    # --- FASE B: LEGGI LO STORICO (Diario) ---
     data_diario = sheet_diario.get_all_values()
-    
     for row in data_diario[1:]:
         if len(row) > 3:
-            data_str = row[0]
-            nome = row[1].strip()
+            data_str, nome = row[0], row[1].strip()
             prezzo_str = row[3].replace("€", "").replace(",", ".").strip()
             
             if nome and data_str:
                 try:
                     dt = datetime.datetime.strptime(data_str, "%d/%m/%Y").date()
-                    
-                    # Aggiorna data ultima visita
                     if nome not in pazienti_last_date or dt > pazienti_last_date[nome]:
                         pazienti_last_date[nome] = dt
                     
-                    # Se c'è un prezzo nello storico, vince su quello base dell'anagrafica
-                    # (perché è quello effettivamente pagato l'ultima volta)
+                    # Lo storico sovrascrive l'anagrafica (è più recente)
                     if prezzo_str:
                         valore = float(prezzo_str)
                         if valore > 0:
@@ -81,24 +88,19 @@ def get_dati_intelligenti(sheet_diario, sh_generale):
                 except:
                     pass
 
-    # --- FASE C: UNIONE LISTE (Attivi + Storico) ---
+    # --- FASE C: UNIONE ---
     oggi = datetime.date.today()
     attivi_set = set(nomi_anagrafica)
-    
     for p, data_ult in pazienti_last_date.items():
-        delta = (oggi - data_ult).days
-        if delta <= 90:
+        if (oggi - data_ult).days <= 90:
             attivi_set.add(p)
             
     attivi = list(attivi_set)
     attivi.sort()
-    
-    storico_completo = list(pazienti_last_date.keys())
-    # Aggiungiamo allo storico anche quelli in anagrafica che non hanno mai fatto sedute
-    storico_completo = list(set(storico_completo + nomi_anagrafica))
-    storico_completo.sort()
+    storico = list(set(list(pazienti_last_date.keys()) + nomi_anagrafica))
+    storico.sort()
             
-    return attivi, storico_completo, pazienti_last_price
+    return attivi, storico, pazienti_last_price, debug_log
 
 # ==============================================================================
 # 3. INTERFACCIA UTENTE
@@ -108,8 +110,18 @@ st.title("🧠 Diario Clinico")
 try:
     sh = get_db()
     ws_diario = sh.worksheet("Diario")
+    attivi, storico, memoria_prezzi, debug_info = get_dati_intelligenti(ws_diario, sh)
     
-    attivi, storico, memoria_prezzi = get_dati_intelligenti(ws_diario, sh)
+    # --- DEBUGGER: MOSTRA COSA HA LETTO (SOLO PER ORA) ---
+    with st.expander("🕵️ SPIA DATI (Clicca per vedere se legge i prezzi)", expanded=False):
+        st.write("Ecco cosa ho letto nel foglio Pazienti:")
+        for msg in debug_info:
+            if "✅" in msg:
+                st.success(msg)
+            elif "⚠️" in msg:
+                st.warning(msg)
+            else:
+                st.error(msg)
     
     # --- FORM ---
     data_seduta = st.date_input("Data Seduta", datetime.date.today(), format="DD/MM/YYYY")
@@ -122,7 +134,7 @@ try:
         if attivi:
             paziente = st.selectbox("Seleziona", attivi)
         else:
-            st.warning("Nessun paziente. Aggiungili nel foglio 'Pazienti'.")
+            st.warning("Lista vuota. Controlla la 'Spia' qui sopra.")
     elif scelta == "Archivio":
         if storico:
             paziente = st.selectbox("Cerca archivio", storico)
@@ -138,23 +150,19 @@ try:
         tipo = st.radio("Modalità", ["Presenza", "Online"])
     with c2:
         prezzo_suggerito = 0.0
-        msg = "Inserisci importo"
+        msg_help = "Inserisci importo"
         
-        # Logica di Suggerimento Prezzo
+        # Logica Suggerimento
         if paziente in memoria_prezzi and scelta != "➕ Nuovo":
             prezzo_suggerito = memoria_prezzi[paziente]
-            # Messaggio diverso a seconda se viene dall'Anagrafica o dallo Storico?
-            # Per semplicità diciamo "Prezzo suggerito"
-            msg = f"Prezzo rilevato: € {prezzo_suggerito:.2f}"
+            msg_help = f"Prezzo rilevato: € {prezzo_suggerito:.2f}"
             
-        prezzo = st.number_input("Prezzo (€)", min_value=0.0, value=prezzo_suggerito, step=5.0, help=msg)
+        prezzo = st.number_input("Prezzo (€)", min_value=0.0, value=prezzo_suggerito, step=5.0, help=msg_help)
 
     note = st.text_area("Note", height=80)
     st.divider()
     
-    is_ready = paziente != "" and prezzo > 0
-    
-    if st.button("💾 REGISTRA SEDUTA", type="primary", use_container_width=True, disabled=not is_ready):
+    if st.button("💾 REGISTRA SEDUTA", type="primary", use_container_width=True, disabled=(not paziente or prezzo == 0)):
         riga = [
             data_seduta.strftime("%d/%m/%Y"),
             paziente,
@@ -169,4 +177,4 @@ try:
         st.rerun()
         
 except Exception as e:
-    st.error(f"Errore: {e}")
+    st.error(f"Errore Critico: {e}")
