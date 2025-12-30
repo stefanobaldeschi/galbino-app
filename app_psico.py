@@ -13,60 +13,69 @@ st.set_page_config(page_title="Diario Clinico", page_icon="🧠", layout="center
 def get_db():
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        # Legge le credenziali direttamente dal formato TOML dei secrets
         creds_dict = dict(st.secrets["psico_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         return client.open_by_url(st.secrets["psico"]["spreadsheet_url"])
     except Exception as e:
-        st.error(f"Errore nei Secrets o nel collegamento: {e}")
+        st.error(f"Errore nei Secrets: {e}")
         st.stop()
 
 # ==============================================================================
-# 2. LOGICA INTELLIGENTE (Impara dai dati passati)
+# 2. LOGICA INTELLIGENTE (Storico + Anagrafica)
 # ==============================================================================
-def get_dati_intelligenti(sheet_diario):
-    data = sheet_diario.get_all_values()
+def get_dati_intelligenti(sheet_diario, sheet_pazienti):
+    # 1. LEGGE LO STORICO DAL DIARIO
+    data_diario = sheet_diario.get_all_values()
     pazienti_last_date = {}
     pazienti_last_price = {}
     
-    # Salta l'intestazione (riga 1)
-    # Colonne attese: A:Data | B:Paziente | C:Tipo | D:Prezzo | E:Note
-    for row in data[1:]:
-        if len(row) > 3: # Se la riga ha abbastanza dati
+    # Salta intestazione (riga 1)
+    for row in data_diario[1:]:
+        if len(row) > 3:
             data_str = row[0]
             nome = row[1].strip()
-            # Pulisce il prezzo da € e converte virgola in punto
             prezzo_str = row[3].replace("€", "").replace(",", ".").strip()
             
             if nome and data_str:
                 try:
                     dt = datetime.datetime.strptime(data_str, "%d/%m/%Y").date()
-                    
-                    # Memorizza l'ultima data per sapere se è attivo
+                    # Aggiorna data
                     if nome not in pazienti_last_date or dt > pazienti_last_date[nome]:
                         pazienti_last_date[nome] = dt
-                    
-                    # Memorizza l'ultimo prezzo valido
+                    # Aggiorna prezzo
                     if prezzo_str:
                         valore = float(prezzo_str)
                         if valore > 0:
                             pazienti_last_price[nome] = valore
                 except:
-                    pass # Ignora righe rovinate
+                    pass
 
-    # Filtra i pazienti degli ultimi 3 mesi (90 gg)
+    # 2. LEGGE L'ANAGRAFICA MANUALE (Foglio Pazienti)
+    try:
+        nomi_anagrafica = sheet_pazienti.col_values(1)[1:] # Legge colonna A saltando l'intestazione
+        nomi_anagrafica = [n.strip() for n in nomi_anagrafica if n.strip()] # Pulisce righe vuote
+    except:
+        nomi_anagrafica = []
+
+    # 3. UNISCE I DATI (Chi è attivo?)
     oggi = datetime.date.today()
-    attivi = []
-    storico = list(pazienti_last_date.keys())
-    storico.sort()
+    attivi_set = set(nomi_anagrafica) # Parte con quelli scritti a mano
     
-    for p in storico:
-        delta = (oggi - pazienti_last_date[p]).days
+    # Aggiunge quelli recenti dallo storico (ultimi 90gg)
+    for p, data_ult in pazienti_last_date.items():
+        delta = (oggi - data_ult).days
         if delta <= 90:
-            attivi.append(p)
+            attivi_set.add(p)
             
-    return attivi, storico, pazienti_last_price
+    # Crea liste ordinate
+    attivi = list(attivi_set)
+    attivi.sort()
+    
+    storico_completo = list(pazienti_last_date.keys())
+    storico_completo.sort()
+            
+    return attivi, storico_completo, pazienti_last_price
 
 # ==============================================================================
 # 3. INTERFACCIA UTENTE
@@ -74,12 +83,15 @@ def get_dati_intelligenti(sheet_diario):
 st.title("🧠 Diario Clinico")
 
 try:
-    # Connessione
     sh = get_db()
     ws_diario = sh.worksheet("Diario")
-    
-    # Lettura dati
-    attivi, storico, memoria_prezzi = get_dati_intelligenti(ws_diario)
+    # Prova a prendere il foglio Pazienti, se non esiste lo ignora
+    try:
+        ws_pazienti = sh.worksheet("Pazienti")
+    except:
+        ws_pazienti = None
+        
+    attivi, storico, memoria_prezzi = get_dati_intelligenti(ws_diario, ws_pazienti)
     
     # --- FORM ---
     
@@ -95,7 +107,7 @@ try:
         if attivi:
             paziente = st.selectbox("Seleziona", attivi)
         else:
-            st.info("Nessun paziente recente.")
+            st.info("Nessun paziente in lista. Aggiungili nel foglio 'Pazienti' o fai la prima seduta.")
     elif scelta == "Archivio":
         if storico:
             paziente = st.selectbox("Cerca nell'archivio", storico)
@@ -106,14 +118,13 @@ try:
         
     st.write("")
     
-    # DETTAGLI (Tipo e Prezzo)
+    # DETTAGLI
     c1, c2 = st.columns([1, 1])
     with c1:
         tipo = st.radio("Modalità", ["Presenza", "Online"])
     with c2:
         prezzo_suggerito = 0.0
         msg = "Inserisci importo"
-        # Se esiste uno storico prezzi per questo paziente, lo suggerisce
         if paziente in memoria_prezzi and scelta != "➕ Nuovo":
             prezzo_suggerito = memoria_prezzi[paziente]
             msg = f"Ultimo: € {prezzo_suggerito:.2f}"
@@ -124,11 +135,10 @@ try:
     
     st.divider()
     
-    # TASTO SALVA (Attivo solo se c'è nome e prezzo)
+    # SAVE
     is_ready = paziente != "" and prezzo > 0
     
     if st.button("💾 REGISTRA SEDUTA", type="primary", use_container_width=True, disabled=not is_ready):
-        # A=Data | B=Paziente | C=Tipo | D=Prezzo | E=Note | F=Stato
         riga = [
             data_seduta.strftime("%d/%m/%Y"),
             paziente,
@@ -138,9 +148,9 @@ try:
             "DA FARE"
         ]
         ws_diario.append_row(riga)
-        st.success(f"✅ Salvato: {paziente} - € {prezzo}")
+        st.success(f"✅ Salvato: {paziente}")
         time.sleep(1.5)
         st.rerun()
         
 except Exception as e:
-    st.error(f"Errore generale: {e}")
+    st.error(f"Errore: {e}")
