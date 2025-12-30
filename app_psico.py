@@ -22,15 +22,14 @@ def get_db():
         st.stop()
 
 # ==============================================================================
-# 2. LOGICA INTELLIGENTE (Storico + Anagrafica)
+# 2. LOGICA INTELLIGENTE (DEBUG MODE)
 # ==============================================================================
-def get_dati_intelligenti(sheet_diario, sheet_pazienti):
-    # 1. LEGGE LO STORICO DAL DIARIO
+def get_dati_intelligenti(sheet_diario, sh_generale):
+    # 1. LEGGE LO STORICO
     data_diario = sheet_diario.get_all_values()
     pazienti_last_date = {}
     pazienti_last_price = {}
     
-    # Salta intestazione (riga 1)
     for row in data_diario[1:]:
         if len(row) > 3:
             data_str = row[0]
@@ -40,10 +39,8 @@ def get_dati_intelligenti(sheet_diario, sheet_pazienti):
             if nome and data_str:
                 try:
                     dt = datetime.datetime.strptime(data_str, "%d/%m/%Y").date()
-                    # Aggiorna data
                     if nome not in pazienti_last_date or dt > pazienti_last_date[nome]:
                         pazienti_last_date[nome] = dt
-                    # Aggiorna prezzo
                     if prezzo_str:
                         valore = float(prezzo_str)
                         if valore > 0:
@@ -51,24 +48,36 @@ def get_dati_intelligenti(sheet_diario, sheet_pazienti):
                 except:
                     pass
 
-    # 2. LEGGE L'ANAGRAFICA MANUALE (Foglio Pazienti)
+    # 2. LEGGE L'ANAGRAFICA (SENZA PROTEZIONI)
+    nomi_anagrafica = []
     try:
-        nomi_anagrafica = sheet_pazienti.col_values(1)[1:] # Legge colonna A saltando l'intestazione
-        nomi_anagrafica = [n.strip() for n in nomi_anagrafica if n.strip()] # Pulisce righe vuote
-    except:
-        nomi_anagrafica = []
+        # Cerca esplicitamente il foglio "Pazienti"
+        ws_pazienti = sh_generale.worksheet("Pazienti")
+        colonna_A = ws_pazienti.col_values(1)
+        
+        # Se la colonna ha dati, li prende (saltando la riga 1)
+        if len(colonna_A) > 1:
+            nomi_anagrafica = [n.strip() for n in colonna_A[1:] if n.strip()]
+        else:
+            # Se trova il foglio ma è vuoto, lo segnala in piccolo
+            st.toast("⚠️ Trovato foglio 'Pazienti' ma sembra vuoto nella colonna A!")
+            
+    except gspread.exceptions.WorksheetNotFound:
+        st.error("ERRORE: Non trovo il foglio chiamato 'Pazienti'. Controlla maiuscole/minuscole nel Google Sheet!")
+        st.stop()
+    except Exception as e:
+        st.error(f"Errore imprevisto leggendo i Pazienti: {e}")
+        st.stop()
 
-    # 3. UNISCE I DATI (Chi è attivo?)
+    # 3. UNISCE I DATI
     oggi = datetime.date.today()
-    attivi_set = set(nomi_anagrafica) # Parte con quelli scritti a mano
+    attivi_set = set(nomi_anagrafica)
     
-    # Aggiunge quelli recenti dallo storico (ultimi 90gg)
     for p, data_ult in pazienti_last_date.items():
         delta = (oggi - data_ult).days
         if delta <= 90:
             attivi_set.add(p)
             
-    # Crea liste ordinate
     attivi = list(attivi_set)
     attivi.sort()
     
@@ -85,21 +94,14 @@ st.title("🧠 Diario Clinico")
 try:
     sh = get_db()
     ws_diario = sh.worksheet("Diario")
-    # Prova a prendere il foglio Pazienti, se non esiste lo ignora
-    try:
-        ws_pazienti = sh.worksheet("Pazienti")
-    except:
-        ws_pazienti = None
-        
-    attivi, storico, memoria_prezzi = get_dati_intelligenti(ws_diario, ws_pazienti)
+    
+    # Passiamo l'intero spreadsheet (sh) per cercare "Pazienti" dentro la funzione
+    attivi, storico, memoria_prezzi = get_dati_intelligenti(ws_diario, sh)
     
     # --- FORM ---
-    
-    # DATA
     data_seduta = st.date_input("Data Seduta", datetime.date.today(), format="DD/MM/YYYY")
     st.write("")
     
-    # PAZIENTE
     scelta = st.radio("Paziente", ["Lista Attiva", "Archivio", "➕ Nuovo"], horizontal=True, label_visibility="collapsed")
     
     paziente = ""
@@ -107,10 +109,10 @@ try:
         if attivi:
             paziente = st.selectbox("Seleziona", attivi)
         else:
-            st.info("Nessun paziente in lista. Aggiungili nel foglio 'Pazienti' o fai la prima seduta.")
+            st.warning("Lista vuota. Controlla di aver scritto i nomi nella Colonna A del foglio 'Pazienti'.")
     elif scelta == "Archivio":
         if storico:
-            paziente = st.selectbox("Cerca nell'archivio", storico)
+            paziente = st.selectbox("Cerca archivio", storico)
         else:
             st.warning("Archivio vuoto.")
     else:
@@ -118,7 +120,6 @@ try:
         
     st.write("")
     
-    # DETTAGLI
     c1, c2 = st.columns([1, 1])
     with c1:
         tipo = st.radio("Modalità", ["Presenza", "Online"])
@@ -128,29 +129,19 @@ try:
         if paziente in memoria_prezzi and scelta != "➕ Nuovo":
             prezzo_suggerito = memoria_prezzi[paziente]
             msg = f"Ultimo: € {prezzo_suggerito:.2f}"
-            
         prezzo = st.number_input("Prezzo (€)", min_value=0.0, value=prezzo_suggerito, step=5.0, help=msg)
 
-    note = st.text_area("Note (Opzionale)", height=80)
-    
+    note = st.text_area("Note", height=80)
     st.divider()
     
-    # SAVE
     is_ready = paziente != "" and prezzo > 0
     
     if st.button("💾 REGISTRA SEDUTA", type="primary", use_container_width=True, disabled=not is_ready):
-        riga = [
-            data_seduta.strftime("%d/%m/%Y"),
-            paziente,
-            tipo,
-            f"{prezzo:.2f}".replace(".", ","),
-            note,
-            "DA FARE"
-        ]
+        riga = [data_seduta.strftime("%d/%m/%Y"), paziente, tipo, f"{prezzo:.2f}".replace(".", ","), note, "DA FARE"]
         ws_diario.append_row(riga)
         st.success(f"✅ Salvato: {paziente}")
         time.sleep(1.5)
         st.rerun()
         
 except Exception as e:
-    st.error(f"Errore: {e}")
+    st.error(f"Errore Generale: {e}")
