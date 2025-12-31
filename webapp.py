@@ -381,7 +381,8 @@ def app_preventivi_affitto():
         
     # --- CALCOLO PREZZO DIRETTO ---
     # Sconto sul prezzo Airbnb Totale
-    prezzo_diretto = prezzo_airbnb_totale * (1 - (perc_sconto_diretto / 100))
+    # CORREZIONE: Ora sottrae anche lo sconto manuale (sconto)
+    prezzo_diretto = (prezzo_airbnb_totale * (1 - (perc_sconto_diretto / 100))) - sconto
 
     # --- VISUALIZZAZIONE COMPARATA ---
     st.markdown("### 💰 Preventivo Comparato")
