@@ -73,10 +73,10 @@ def app_preventivi_affitto():
         ("Prima Spesa", 0), ("Extra Cleaning", 200)
     ]
 
-    # --- LISTINO PREZZI AIRBNB (LORDO) ---
-    # MODIFICA: Aggiornati prezzi Alta Stagione (Flat rate fino a 24 pax)
+    # --- LISTINO PREZZI AIRBNB (STANDARD) ---
+    # Qui rimettiamo i prezzi "Vecchi/Standard" per il 2026
     RATES_AIRBNB = {
-        "Alta":  {"Base": 2850, "We": 4250, "CapienzaBase": 24, "Max": 24}, # CapienzaBase 24 = Prezzo fisso da 1 a 24 pax
+        "Alta":  {"Base": 2000, "We": 3100, "CapienzaBase": 16, "Max": 24}, # Standard 2026
         "Media": {"Base": 1500, "We": 2200, "CapienzaBase": 16, "Max": 24},
         "Bassa": {"Base": 1200, "We": 1200, "CapienzaBase": 10, "Max": 22}
     }
@@ -131,8 +131,6 @@ def app_preventivi_affitto():
         fine_media_2 = datetime.date(anno, 8, 31)
         
         # Definizione Autunno Media
-        # Se è < 2027: Settembre (1/9) è Media.
-        # Se è >= 2027: Settembre è Alta, quindi Media parte da Ottobre (1/10).
         start_autunno_media = datetime.date(anno, 9, 1)
         if anno >= 2027:
             start_autunno_media = datetime.date(anno, 10, 1)
@@ -155,29 +153,34 @@ def app_preventivi_affitto():
             giorno = data_arrivo + datetime.timedelta(days=i)
             stg = get_stagione(giorno)
             
-            # DEFINIZIONE WEEKEND:
-            # 0=Lun, 1=Mar, 2=Mer, 3=Gio, 4=Ven, 5=Sab, 6=Dom
-            # Giovedì (3) è considerato Weekend
+            # DEFINIZIONE WEEKEND
             tipo = "We" if giorno.weekday() in [3,4,5,6] else "Base"
             
-            tariffa_base = RATES_AIRBNB[stg]
-            
+            # --- LOGICA PREZZI DINAMICA (2026 vs 2027+) ---
+            # Se siamo in Alta Stagione DAL 2027 in poi, usiamo i nuovi prezzi Flat
+            if stg == "Alta" and giorno.year >= 2027:
+                tariffa_base = {"Base": 2850, "We": 4250, "CapienzaBase": 24, "Max": 24}
+                tag_log = "Alta27"
+            else:
+                # Altrimenti usiamo i prezzi standard (2026 o altre stagioni)
+                tariffa_base = RATES_AIRBNB[stg]
+                tag_log = stg
+
             # --- Check Max Ospiti ---
             if ospiti > tariffa_base["Max"]:
                  log.append(f"⚠️ {giorno.strftime('%d/%m')}: {ospiti} pax > max ({tariffa_base['Max']})")
             
-            # Calcolo Affitto Base (Listino)
+            # Calcolo Affitto Base
             prezzo_base = tariffa_base[tipo]
             
-            # Calcolo Extra Pax (Listino)
-            # In ALTA, CapienzaBase è 24, quindi se ospiti <= 24 l'extra è 0 (Flat Rate)
+            # Calcolo Extra Pax
             pax_eccedenti = max(0, ospiti - tariffa_base["CapienzaBase"])
             costo_extra = pax_eccedenti * COSTO_EXTRA_PAX_AIRBNB
             
             tot_affitto += prezzo_base
             tot_extra += costo_extra
             
-            log.append(f"{giorno.strftime('%d/%m')} ({stg}-{tipo}): Base €{prezzo_base} + Extra €{costo_extra}")
+            log.append(f"{giorno.strftime('%d/%m')} ({tag_log}-{tipo}): Base €{prezzo_base} + Extra €{costo_extra}")
             
         return tot_affitto, tot_extra, log
 
@@ -310,7 +313,7 @@ def app_preventivi_affitto():
     netto_galbino_totale = 0
     affitto_airbnb_finale = 0
     
-    # Procediamo solo se abbiamo valori validi (anche se ospiti > 24 ora funziona)
+    # Procediamo solo se abbiamo valori validi
     if notti >= MIN_STAY:
         # A. Sconto Lunga Durata (Su Listino Airbnb)
         if notti >= 7:
@@ -332,7 +335,6 @@ def app_preventivi_affitto():
         costo_extra_listino = 0 # Se è manuale, assumiamo sia tutto incluso nel prezzo sopra
         
     # --- CALCOLI FINALI ---
-    # Usiamo un controllo robusto per evitare crash
     if affitto_airbnb_finale is not None:
         # B. Totale Lordo Airbnb (Affitto + Extra + Pulizie)
         prezzo_airbnb_totale = affitto_airbnb_finale + (costo_extra_listino if costo_extra_listino else 0) + PULIZIE_AIRBNB
@@ -377,26 +379,44 @@ def app_preventivi_affitto():
 
     st.divider()
     
+    # --- CHECK STRATEGIA: ALTA STAGIONE 2027+ ---
+    # Determiniamo se dobbiamo applicare la logica "No Pulizie"
+    stg_checkin = get_stagione(checkin)
+    is_strategy_alta_2027 = (stg_checkin == "Alta" and checkin.year >= 2027)
+
     # --- INPUT SCONTO DIRETTO ---
     c_sconto_dir, c_sconto_man, c_note = st.columns([1, 1, 2])
     with c_sconto_dir:
-        perc_sconto_diretto = st.number_input("% Sconto Diretto (vs Airbnb)", value=5.0, step=0.5)
+        # Se è Alta 2027, lo sconto parte da 0%, altrimenti magari si vuole il classico 5%
+        # Qui lasciamo 0% per coerenza con l'ultimo messaggio, o 5% se preferisci
+        perc_sconto_diretto = st.number_input("% Sconto Diretto (vs Airbnb)", value=0.0, step=0.5)
     with c_sconto_man:
         sconto = st.number_input("Sconto Manuale Extra (€)", min_value=0.0, step=50.0)
     with c_note:
         note = st.text_area("Note interne")
         
-    # --- CALCOLO PREZZO DIRETTO ---
-    # Sconto sul prezzo Airbnb Totale
-    # CORREZIONE: Ora sottrae anche lo sconto manuale (sconto)
-    prezzo_diretto = (prezzo_airbnb_totale * (1 - (perc_sconto_diretto / 100))) - sconto
+    # --- CALCOLO PREZZO DIRETTO (LOGICA CONDIZIONALE) ---
+    
+    if is_strategy_alta_2027:
+        # NUOVA STRATEGIA (Solo Alta Stagione dal 2027 in poi)
+        # Prezzo diretto = Affitto + Extra - Sconto (SENZA PULIZIE)
+        totale_per_calcolo_diretto = affitto_airbnb_finale + (costo_extra_listino if costo_extra_listino else 0)
+        prezzo_diretto = (totale_per_calcolo_diretto * (1 - (perc_sconto_diretto / 100))) - sconto
+        label_delta = "No Pulizie (Alta '27)"
+        valore_pulizie_da_salvare_diretto = 0
+    else:
+        # VECCHIA STRATEGIA (2026 o altre stagioni)
+        # Prezzo diretto = Totale Airbnb (con pulizie) scontato
+        prezzo_diretto = (prezzo_airbnb_totale * (1 - (perc_sconto_diretto / 100))) - sconto
+        label_delta = "vs Airbnb"
+        valore_pulizie_da_salvare_diretto = PULIZIE_AIRBNB * (1 - (perc_sconto_diretto / 100))
 
     # --- VISUALIZZAZIONE COMPARATA ---
     st.markdown("### 💰 Preventivo Comparato")
     k1, k2, k3 = st.columns(3)
     k1.metric("1. NETTO GALBINO", f"€ {netto_galbino_totale:,.2f}", delta="Cassa Reale (-15.5%)", delta_color="off", help="Questo è il bonifico netto atteso da Airbnb")
     k2.metric(f"2. PREZZO AIRBNB", f"€ {prezzo_airbnb_totale:,.2f}", help=f"Affitto + Extra + {PULIZIE_AIRBNB}€ Pulizie")
-    k3.metric(f"3. PREZZO DIRETTO (-{perc_sconto_diretto}%)", f"€ {prezzo_diretto:,.2f}", delta="vs Airbnb", delta_color="inverse")
+    k3.metric(f"3. PREZZO DIRETTO (-{perc_sconto_diretto}%)", f"€ {prezzo_diretto:,.2f}", delta=label_delta, delta_color="inverse")
     
     st.divider()
     st.info(f"Totale Servizi Extra: € {totale_servizi:,.2f}")
@@ -418,9 +438,16 @@ def app_preventivi_affitto():
         pulizie_da_salvare = PULIZIE_AIRBNB
         canale_str = "Airbnb"
     elif scelta_salvataggio == "Prezzo Diretto":
-        fattore_sconto = (1 - (perc_sconto_diretto / 100))
-        affitto_da_salvare = (safe_affitto_base + safe_extra) * fattore_sconto
-        pulizie_da_salvare = PULIZIE_AIRBNB * fattore_sconto
+        if is_strategy_alta_2027:
+            # Nuova logica: niente pulizie
+            affitto_da_salvare = (safe_affitto_base + safe_extra) * (1 - (perc_sconto_diretto / 100))
+            pulizie_da_salvare = 0
+        else:
+            # Vecchia logica: tutto scontato
+            fattore = (1 - (perc_sconto_diretto / 100))
+            affitto_da_salvare = (safe_affitto_base + safe_extra) * fattore
+            pulizie_da_salvare = PULIZIE_AIRBNB * fattore
+            
         canale_str = f"Diretto (-{perc_sconto_diretto}%)"
     else:
         # Netto Reale (Airbnb * 0.845)
@@ -618,4 +645,4 @@ if check_login():
         app_preventivi_affitto()
     elif app_mode == "👨‍🍳 Catering Manager":
         app_catering_manager()
-# Aggiornamento forzato
+        # Aggiornamento forzato 2
