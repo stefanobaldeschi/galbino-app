@@ -618,3 +618,4 @@ if check_login():
         app_preventivi_affitto()
     elif app_mode == "👨‍🍳 Catering Manager":
         app_catering_manager()
+# Aggiornamento forzato
