@@ -74,8 +74,9 @@ def app_preventivi_affitto():
     ]
 
     # --- LISTINO PREZZI AIRBNB (LORDO) ---
+    # MODIFICA: Aggiornati prezzi Alta Stagione (Flat rate fino a 24 pax)
     RATES_AIRBNB = {
-        "Alta": {"Base": 2000, "We": 3100, "CapienzaBase": 16, "Max": 24},
+        "Alta":  {"Base": 2850, "We": 4250, "CapienzaBase": 24, "Max": 24}, # CapienzaBase 24 = Prezzo fisso da 1 a 24 pax
         "Media": {"Base": 1500, "We": 2200, "CapienzaBase": 16, "Max": 24},
         "Bassa": {"Base": 1200, "We": 1200, "CapienzaBase": 10, "Max": 22}
     }
@@ -153,10 +154,15 @@ def app_preventivi_affitto():
         for i in range(notti):
             giorno = data_arrivo + datetime.timedelta(days=i)
             stg = get_stagione(giorno)
+            
+            # DEFINIZIONE WEEKEND:
+            # 0=Lun, 1=Mar, 2=Mer, 3=Gio, 4=Ven, 5=Sab, 6=Dom
+            # Giovedì (3) è considerato Weekend
             tipo = "We" if giorno.weekday() in [3,4,5,6] else "Base"
+            
             tariffa_base = RATES_AIRBNB[stg]
             
-            # --- MODIFICA ANTI-CRASH: Rimosso blocco rigido su Max Ospiti ---
+            # --- Check Max Ospiti ---
             if ospiti > tariffa_base["Max"]:
                  log.append(f"⚠️ {giorno.strftime('%d/%m')}: {ospiti} pax > max ({tariffa_base['Max']})")
             
@@ -164,13 +170,14 @@ def app_preventivi_affitto():
             prezzo_base = tariffa_base[tipo]
             
             # Calcolo Extra Pax (Listino)
+            # In ALTA, CapienzaBase è 24, quindi se ospiti <= 24 l'extra è 0 (Flat Rate)
             pax_eccedenti = max(0, ospiti - tariffa_base["CapienzaBase"])
             costo_extra = pax_eccedenti * COSTO_EXTRA_PAX_AIRBNB
             
             tot_affitto += prezzo_base
             tot_extra += costo_extra
             
-            log.append(f"{giorno.strftime('%d/%m')}: Base €{prezzo_base} + Extra €{costo_extra}")
+            log.append(f"{giorno.strftime('%d/%m')} ({stg}-{tipo}): Base €{prezzo_base} + Extra €{costo_extra}")
             
         return tot_affitto, tot_extra, log
 
