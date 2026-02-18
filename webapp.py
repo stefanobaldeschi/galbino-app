@@ -266,11 +266,11 @@ def app_preventivi_affitto():
         
         msg_extra = ""
         if notti_extra == 1:
-            # Calcolo valore notte extra: (Stay / 3) * 0.8
+            # Calcolo valore notte extra: (Stay / 3) * 0.6 (SCONTO 40% sul valore notte base)
             valore_notte_base = selected_pkg["stay"] / 3
-            valore_notte_scontato = valore_notte_base * 0.8
+            valore_notte_scontato = valore_notte_base * 0.6
             extra_cost = valore_notte_scontato
-            msg_extra = f" + 4° notte scontata (€ {extra_cost:,.0f})"
+            msg_extra = f" + 4° notte scontata 40% (€ {extra_cost:,.0f})"
 
         totale_lordo = base_tot + extra_cost
         totale_finale = totale_lordo * fattore_agosto
