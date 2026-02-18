@@ -66,11 +66,12 @@ def app_preventivi_affitto():
     
     LODGIFY_ICAL_URL = "https://www.lodgify.com/5bab045e-30ec-4edf-aabf-970d352e7549.ics"
     
+    # LISTA SERVIZI COMPLETA
     LISTA_SERVIZI = [
         ("Wedding Fee", 30), ("Breakfast", 20), ("Lunch", 45), ("Dinner", 75),
         ("BBQ", 60), ("Cooking Class", 120), ("Wine Tasting", 50),
         ("Truffle Hunting", 150), ("Ebike Tour", 80), ("Transfer", 150),
-        ("Prima Spesa", 0), ("Extra Cleaning", 200)
+        ("Prima Spesa", 0), ("Extra Cleaning", 200), ("Extra Event Fee", 1500)
     ]
 
     # --- COSTI E PARAMETRI ---
@@ -101,23 +102,15 @@ def app_preventivi_affitto():
         
         # --- LOGICA 2027 (e successivi) ---
         if anno >= 2027:
-            # 1. Tutto Settembre è Alta
             if data.month == 9: return "Alta"
-            # 2. Tutto Giugno, Luglio, Agosto è Alta
-            # (Agosto verrà scontato dopo, ma tecnicamente è stagione Wedding)
             if data.month in [6, 7, 8]: return "Alta"
             
-            # 3. Fine Maggio (Ultimo weekend)
             if data.month == 5:
-                # Calcoliamo l'ultimo giovedì di maggio come start
                 maggio_31 = datetime.date(anno, 5, 31)
-                # Giorni da sottrarre per arrivare a giovedì (weekday 3)
                 offset = (maggio_31.weekday() - 3) % 7
                 inizio_alta = maggio_31 - datetime.timedelta(days=offset)
                 if data >= inizio_alta: return "Alta"
             
-            # Tutto il resto è Media/Bassa (Semplificazione: Media da Aprile a Ottobre, Bassa resto)
-            # Per ora manteniamo la logica 'Media' per i periodi spalla non-Alta
             if 4 <= data.month <= 10: return "Media"
             return "Bassa"
 
@@ -136,7 +129,6 @@ def app_preventivi_affitto():
         
         inizio_media_1 = datetime.date(anno, 4, 1)
         fine_media_2 = datetime.date(anno, 8, 31)
-        # Nel 2026 Settembre è Media
         if (inizio_media_1 <= data < inizio_alta) or (ultimo_lun_luglio <= data <= fine_media_2) or (datetime.date(anno, 9, 1) <= data <= datetime.date(anno, 10, 15)):
              return "Media"
              
@@ -230,10 +222,10 @@ def app_preventivi_affitto():
         if data_arrivo.year < 2027: return None
         if stg_start != "Alta": return None
         
-        # VINCOLO DURATA: Solo 3, 4 o 7 notti.
-        if notti in [5, 6]:
-            return {"error": "⛔ Durata non valida per Pacchetto Wedding (ammessi solo 3, 4 o 7 notti)"}
-        if notti < 3: return None
+        # --- FILTRO RIGIDO DURATA ---
+        # Accettiamo SOLO 3, 4 o 7 notti. Tutto il resto è scartato.
+        if notti not in [3, 4, 7]:
+             return {"error": f"⛔ Durata di {notti} notti non valida per Pacchetti (Ammessi solo 3, 4 o 7 notti esatte)"}
 
         wd_start = data_arrivo.weekday() # 0=Lun, 6=Dom
         
@@ -402,6 +394,7 @@ def app_preventivi_affitto():
     # BOX OPZIONE A
     with col_A:
         st.markdown("#### 🅰️ Opzione Rental (Standard)")
+        st.caption("✅ Incl: Pulizie Finali | ❌ Escl: Wedding Fee")
         st.metric("Totale Affitto", f"€ {price_A:,.0f}")
         with st.expander("Dettaglio Giornaliero"):
             for l in log_A: st.write(l)
@@ -413,6 +406,7 @@ def app_preventivi_affitto():
     
     with col_B:
         st.markdown("#### 🅱️ Opzione Wedding (Aggressive)")
+        st.caption("✅ Incl: Pulizie, Wedding Fee, Colazioni")
         if res_B:
             if "error" in res_B:
                 st.error(res_B["error"])
@@ -420,7 +414,7 @@ def app_preventivi_affitto():
             else:
                 st.metric("Totale Pacchetto", f"€ {res_B['prezzo']:,.0f}", help=res_B['desc'])
                 st.info(res_B['dettagli'])
-                usa_B = st.checkbox("✅ Seleziona Opzione Pacchetto", value=False)
+                usa_B = st.checkbox("Seleziona Opzione Pacchetto", value=False)
                 if usa_B:
                     prezzo_da_salvare = res_B['prezzo']
                     desc_da_salvare = res_B['desc'] + " | " + res_B['dettagli']
@@ -448,7 +442,7 @@ def app_preventivi_affitto():
                 qta = 1
             elif "Prima Spesa" in nome:
                 p_unit = st.number_input(f"Costo Scontrino", value=0.0, key=f"p_{nome}"); pax=1; qta=1
-            elif "Transfer" in nome or "Extra Cleaning" in nome:
+            elif "Transfer" in nome or "Extra Cleaning" in nome or "Extra Event" in nome:
                 c1, c2 = st.columns(2)
                 p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
                 pax = 1 
