@@ -66,12 +66,14 @@ def app_preventivi_affitto():
     
     LODGIFY_ICAL_URL = "https://www.lodgify.com/5bab045e-30ec-4edf-aabf-970d352e7549.ics"
     
-    # LISTA SERVIZI COMPLETA
+    # LISTA SERVIZI RIORDINATA
     LISTA_SERVIZI = [
-        ("Wedding Fee", 30), ("Breakfast", 20), ("Lunch", 45), ("Dinner", 75),
+        ("Wedding Fee", 30), 
+        ("Extra Event Fee", 1500), # SPOSTATO QUI
+        ("Breakfast", 20), ("Lunch", 45), ("Dinner", 75),
         ("BBQ", 60), ("Cooking Class", 120), ("Wine Tasting", 50),
         ("Truffle Hunting", 150), ("Ebike Tour", 80), ("Transfer", 150),
-        ("Prima Spesa", 0), ("Extra Cleaning", 200), ("Extra Event Fee", 1500)
+        ("Prima Spesa", 0), ("Extra Cleaning", 200)
     ]
 
     # --- COSTI E PARAMETRI ---
