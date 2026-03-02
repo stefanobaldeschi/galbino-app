@@ -78,6 +78,7 @@ def app_preventivi_affitto():
     # --- COSTI E PARAMETRI ---
     SPESE_PULIZIA = 600
     MOLTIPLICATORE_AIRBNB = 1.05
+    MIN_STAY = 3
     
     # --------------------------------------------------------------------------
     # LOGICA DATE E STAGIONI
@@ -238,8 +239,8 @@ def app_preventivi_affitto():
         
         c1, c2, c3 = st.columns(3)
         with c1: checkin = st.date_input("Check-In", datetime.date.today(), format="DD/MM/YYYY")
-        default_checkout = checkin + datetime.timedelta(days=2)
-        with c2: checkout = st.date_input("Check-Out", value=default_checkout, min_value=checkin + datetime.timedelta(days=1), format="DD/MM/YYYY")
+        default_checkout = checkin + datetime.timedelta(days=MIN_STAY)
+        with c2: checkout = st.date_input("Check-Out", value=default_checkout, min_value=checkin + datetime.timedelta(days=MIN_STAY), format="DD/MM/YYYY")
         with c3: ospiti = st.number_input("Ospiti (Max 26)", min_value=1, max_value=26, value=16)
 
     is_free, msg = check_availability(checkin, checkout, LODGIFY_ICAL_URL)
@@ -329,14 +330,14 @@ def app_preventivi_affitto():
     
     is_valid = True
     if autore == "Seleziona...": is_valid=False
-    if notti < 1: is_valid=False
+    if notti < MIN_STAY: is_valid=False
     
     with b1:
         if st.button("☁️ SALVA SOLO CLOUD", use_container_width=True):
             if is_valid:
                 riga = [autore, "Diretto", datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti, totale_diretto, totale_generale_diretto, note]
                 if salva_su_google_sheets(riga): st.toast("✅ Salvato!");
-            else: st.error("Dati incompleti o Autore non selezionato")
+            else: st.error(f"Dati incompleti o Soggiorno minimo non rispettato ({MIN_STAY} notti)")
             
     with b2:
         if is_valid:
