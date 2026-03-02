@@ -308,7 +308,7 @@ def app_preventivi_affitto():
             
             if (("Prima Spesa" in nome and p_unit > 0) or (p_unit > 0 and pax > 0 and qta > 0)):
                 sub = p_unit * pax * qta
-                totale_servizi += sub
+                # RISOLTO BUG DEL DOPPIO CALCOLO (era totale_servizi += sub due volte)
                 dettagli_servizi_excel[nome] = {'p_unit': p_unit, 'pax': pax, 'qta': qta, 'subtotale': sub}
                 totale_servizi += sub
 
