@@ -7,7 +7,6 @@ from icalendar import Calendar
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import traceback
-import time
 
 # --- CONFIGURAZIONE GLOBALE ---
 st.set_page_config(page_title="Preventivi Galbino", page_icon="🏰", layout="wide")
@@ -66,221 +65,90 @@ def app_preventivi_affitto():
     
     LODGIFY_ICAL_URL = "https://www.lodgify.com/5bab045e-30ec-4edf-aabf-970d352e7549.ics"
     
-    # LISTA SERVIZI RIORDINATA
+    # LISTA SERVIZI AGGIORNATA
     LISTA_SERVIZI = [
-        ("Wedding Fee", 30), 
-        ("Extra Event Fee", 1500), # SPOSTATO QUI
-        ("Breakfast", 20), ("Lunch", 45), ("Dinner", 75),
+        ("Wedding Fee", 50), 
+        ("Extra Event Fee", 15),
+        ("Breakfast (Inclusa)", 0), ("Lunch", 45), ("Dinner", 75),
         ("BBQ", 60), ("Cooking Class", 120), ("Wine Tasting", 50),
         ("Truffle Hunting", 150), ("Ebike Tour", 80), ("Transfer", 150),
-        ("Prima Spesa", 0), ("Extra Cleaning", 200)
+        ("Prima Spesa", 0)
     ]
 
     # --- COSTI E PARAMETRI ---
-    COSTO_EXTRA_PAX = 100
-    SCONTO_LUNGA_DURATA_STD = 0.15 # Si applica solo all'Opzione A (Standard)
-    MIN_STAY = 3
+    SPESE_PULIZIA = 600
+    MOLTIPLICATORE_AIRBNB = 1.05
     
     # --------------------------------------------------------------------------
     # LOGICA DATE E STAGIONI
     # --------------------------------------------------------------------------
-    
-    def calcola_pasqua(anno):
-        a, b, c = anno % 19, anno // 100, anno % 100
-        d, e = b // 4, b % 4
-        f = (b + 8) // 25
-        g = (b - f + 1) // 3
-        h = (19 * a + b - d - g + 15) % 30
-        i, k = c // 4, c % 4
-        l = (32 + 2 * e + 2 * i - h - k) % 7
-        m = (a + 11 * h + 22 * l) // 451
-        mese = (h + l - 7 * m + 114) // 31
-        giorno = ((h + l - 7 * m + 114) % 31) + 1
-        return datetime.date(anno, mese, giorno)
-
     def get_stagione_pura(data):
-        """Restituisce la stagione base. Per il 2027+ applica la logica Wedding estesa."""
         anno = data.year
+        mese = data.month
+        giorno = data.day
         
-        # --- LOGICA 2027 (e successivi) ---
-        if anno >= 2027:
-            if data.month == 9: return "Alta"
-            if data.month in [6, 7, 8]: return "Alta"
+        # Festività invernali: 21 Dicembre - 6 Gennaio -> MEDIA
+        if (mese == 12 and giorno >= 21) or (mese == 1 and giorno <= 6):
+            return "Media"
             
-            if data.month == 5:
-                maggio_31 = datetime.date(anno, 5, 31)
-                offset = (maggio_31.weekday() - 3) % 7
-                inizio_alta = maggio_31 - datetime.timedelta(days=offset)
-                if data >= inizio_alta: return "Alta"
-            
-            if 4 <= data.month <= 10: return "Media"
+        # Pieno inverno: 7 Gennaio - 31 Marzo -> BASSA
+        if (mese == 1 and giorno >= 7) or mese in [2, 3]:
             return "Bassa"
-
-        # --- LOGICA VECCHIA (2026 e precedenti) ---
-        dt_pasqua = calcola_pasqua(anno)
-        if (dt_pasqua - datetime.timedelta(days=5)) <= data <= (dt_pasqua + datetime.timedelta(days=2)): return "Media"
-        if datetime.date(anno, 12, 20) <= data <= datetime.date(anno, 12, 31) or datetime.date(anno, 1, 1) <= data <= datetime.date(anno, 1, 6): return "Media"
-        
-        maggio_31 = datetime.date(anno, 5, 31)
-        inizio_alta = maggio_31 - datetime.timedelta(days=(maggio_31.weekday() - 3) % 7)
-        luglio_31 = datetime.date(anno, 7, 31)
-        ultimo_lun_luglio = luglio_31 - datetime.timedelta(days=luglio_31.weekday())
-        fine_alta = ultimo_lun_luglio - datetime.timedelta(days=1)
-        
-        if inizio_alta <= data <= fine_alta: return "Alta"
-        
-        inizio_media_1 = datetime.date(anno, 4, 1)
-        fine_media_2 = datetime.date(anno, 8, 31)
-        if (inizio_media_1 <= data < inizio_alta) or (ultimo_lun_luglio <= data <= fine_media_2) or (datetime.date(anno, 9, 1) <= data <= datetime.date(anno, 10, 15)):
-             return "Media"
-             
-        return "Bassa"
+            
+        # Primavera: 1 Aprile fino al mercoledì dell'ultimo weekend di Maggio -> MEDIA
+        if mese == 4:
+            return "Media"
+        if mese == 5:
+            maggio_31 = datetime.date(anno, 5, 31)
+            # Troviamo il giovedì dell'ultimo weekend (weekday 3)
+            offset = (maggio_31.weekday() - 3) % 7
+            ultimo_giovedi = maggio_31 - datetime.timedelta(days=offset)
+            if data < ultimo_giovedi:
+                return "Media"
+            else:
+                return "Alta"
+                
+        # Estate: Giugno e Luglio (più la coda di Maggio già gestita) -> ALTA
+        if mese in [6, 7]:
+            return "Alta"
+            
+        # Tarda Estate e Autunno: Agosto, Settembre, Ottobre -> MEDIA
+        if mese in [8, 9, 10]:
+            return "Media"
+            
+        # Autunno inoltrato/Inverno: Novembre e fino al 20 Dicembre -> BASSA
+        if mese == 11 or (mese == 12 and giorno <= 20):
+            return "Bassa"
+            
+        return "Bassa" # Fallback di sicurezza
 
     # --------------------------------------------------------------------------
-    # OPZIONE A: CALCOLO STANDARD (Rental Puro)
+    # CALCOLO PREZZO SOGGIORNO
     # --------------------------------------------------------------------------
-    def calcola_opzione_A_standard(data_arrivo, notti, ospiti):
+    def calcola_soggiorno(data_arrivo, notti):
         tot_base = 0
-        tot_extra = 0
         log = []
-        is_2027_high = False
         
-        # Prezzi Vecchi (2026 / Media / Bassa)
-        RATES_OLD = {
-            "Alta":  {"Base": 2000, "We": 3100},
-            "Media": {"Base": 1500, "We": 2200},
-            "Bassa": {"Base": 1200, "We": 1200}
+        # NUOVA GRIGLIA PREZZI (Flat fino a 26 pax)
+        PRICES = {
+            "Alta":  {"Infra": 4000, "We": 5200},
+            "Media": {"Infra": 3200, "We": 4160},
+            "Bassa": {"Infra": 2000, "We": 2600}
         }
-        capienza_base_old = 16
         
         for i in range(notti):
             giorno = data_arrivo + datetime.timedelta(days=i)
-            anno = giorno.year
-            mese = giorno.month
             wd = giorno.weekday()
             stg = get_stagione_pura(giorno)
             
-            prezzo_notte = 0
-            tag = ""
-            
-            # --- LOGICA 2027+ ---
-            if anno >= 2027 and stg == "Alta":
-                is_2027_high = True
-                
-                # Definizione prezzi base 2027
-                p_infra = 3200
-                p_weekend = 4250 # Gio-Dom
-                
-                # Se è Agosto, sconto 20%
-                if mese == 8:
-                    p_infra = p_infra * 0.8  # 2560
-                    p_weekend = p_weekend * 0.8 # 3400
-                    tag = "Ago'27"
-                else:
-                    tag = "Alta'27"
-                
-                if wd in [0, 1, 2]: # Lun-Mer
-                    prezzo_notte = p_infra
-                    tag += "(Infra)"
-                else: # Gio-Dom
-                    prezzo_notte = p_weekend
-                    tag += "(We)"
-                
-                costo_ex = 0 
-                
-            else:
-                # --- LOGICA VECCHIA (2026 / Bassa / Media) ---
-                if stg == "Alta": # Caso Alta 2026
-                     tipo = "We" if wd in [3,4,5,6] else "Base"
-                     prezzo_notte = RATES_OLD["Alta"][tipo]
-                else:
-                     tipo = "We" if wd in [3,4,5,6] else "Base"
-                     prezzo_notte = RATES_OLD[stg][tipo]
-                
-                pax_eccedenti = max(0, ospiti - capienza_base_old)
-                costo_ex = pax_eccedenti * COSTO_EXTRA_PAX
-                tag = f"{stg}-{tipo}"
+            # 0=Lun, 1=Mar, 2=Mer (Infra) | 3=Gio, 4=Ven, 5=Sab, 6=Dom (Weekend)
+            tipo_giorno = "Infra" if wd in [0, 1, 2] else "We"
+            prezzo_notte = PRICES[stg][tipo_giorno]
             
             tot_base += prezzo_notte
-            tot_extra += costo_ex
-            log.append(f"{giorno.strftime('%d/%m')} {tag}: €{prezzo_notte:.0f}")
+            log.append(f"{giorno.strftime('%d/%m')} ({stg} - {tipo_giorno}): € {prezzo_notte:,.0f}")
 
-        totale = tot_base + tot_extra
-        # Sconto settimanale solo su Opzione A
-        sconto_long = 0
-        if notti >= 7:
-            sconto_long = totale * SCONTO_LUNGA_DURATA_STD
-            totale -= sconto_long
-            
-        return totale, log, is_2027_high
-
-    # --------------------------------------------------------------------------
-    # OPZIONE B: PACCHETTI WEDDING (Solo Alta/Agosto 2027+)
-    # --------------------------------------------------------------------------
-    def calcola_opzione_B_pacchetto(data_arrivo, notti):
-        # Verifica preliminare: deve essere 2027+ e Alta Stagione (incluso Agosto)
-        stg_start = get_stagione_pura(data_arrivo)
-        
-        if data_arrivo.year < 2027: return None
-        if stg_start != "Alta": return None
-        
-        # --- FILTRO RIGIDO DURATA ---
-        # Accettiamo SOLO 3, 4 o 7 notti. Tutto il resto è scartato.
-        if notti not in [3, 4, 7]:
-             return {"error": f"⛔ Durata di {notti} notti non valida per Pacchetti (Ammessi solo 3, 4 o 7 notti esatte)"}
-
-        wd_start = data_arrivo.weekday() # 0=Lun, 6=Dom
-        
-        # Fattore Sconto Agosto
-        fattore_agosto = 0.8 if data_arrivo.month == 8 else 1.0
-        label_agosto = " (Agosto -20%)" if fattore_agosto < 1.0 else ""
-        
-        # 1. SETTIMANA (7 notti, Ven-Ven)
-        if notti == 7:
-            if wd_start == 4: # Venerdì
-                prezzo = 25500 * fattore_agosto
-                desc = f"📦 WEEKLY{label_agosto}"
-                dettaglio = "7 notti (Ven-Ven) - Esclusiva"
-                return {"prezzo": prezzo, "desc": desc, "dettagli": dettaglio}
-            else:
-                 return {"error": "⛔ Il pacchetto settimanale deve iniziare di Venerdì"}
-
-        # 2. PACCHETTI 3 o 4 NOTTI
-        # Definiamo i Base Packages
-        PKG_WEEKEND = {"stay": 14500, "fee": 4000, "tot": 18500, "name": "WEEKEND"}
-        PKG_MIDWEEK = {"stay": 11500, "fee": 3500, "tot": 15000, "name": "MIDWEEK"}
-        
-        selected_pkg = None
-        
-        # WEEKEND Pkg: check-in Giovedì(3) o Venerdì(4)
-        if wd_start in [3, 4]: 
-             selected_pkg = PKG_WEEKEND
-        # MIDWEEK Pkg: check-in Lunedì(0) o Martedì(1)
-        elif wd_start in [0, 1]: 
-             selected_pkg = PKG_MIDWEEK
-        else:
-             return None # Mer, Sab, Dom non startano pacchetti
-             
-        # Calcolo costo
-        base_tot = selected_pkg["tot"]
-        extra_cost = 0
-        notti_extra = notti - 3
-        
-        msg_extra = ""
-        if notti_extra == 1:
-            # Calcolo valore notte extra: (Stay / 3) * 0.6 (SCONTO 40% sul valore notte base)
-            valore_notte_base = selected_pkg["stay"] / 3
-            valore_notte_scontato = valore_notte_base * 0.6
-            extra_cost = valore_notte_scontato
-            msg_extra = f" + 4° notte scontata 40% (€ {extra_cost:,.0f})"
-
-        totale_lordo = base_tot + extra_cost
-        totale_finale = totale_lordo * fattore_agosto
-        
-        desc = f"📦 {selected_pkg['name']}{label_agosto}"
-        dettagli = f"Base 3 notti (€ {base_tot:,.0f}){msg_extra}"
-        
-        return {"prezzo": totale_finale, "desc": desc, "dettagli": dettagli}
+        return tot_base, log
 
     def check_availability(checkin, checkout, url):
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -315,7 +183,7 @@ def app_preventivi_affitto():
             st.error(f"Errore DB: {e}")
             return False
             
-    def generate_excel(autore, cliente, checkin, checkout, notti, ospiti, prezzo_finale, dettagli_servizi, sconto, note, tipo_prev, dettagli_pkg):
+    def generate_excel(autore, cliente, checkin, checkout, notti, ospiti, prezzo_soggiorno, spese_pulizia, totale_diretto, dettagli_servizi, sconto, note):
         output = io.BytesIO()
         workbook = xlsxwriter.Workbook(output, {'in_memory': True})
         worksheet = workbook.add_worksheet("Preventivo")
@@ -326,17 +194,15 @@ def app_preventivi_affitto():
         
         worksheet.set_column('A:B', 25); worksheet.set_column('C:D', 20)
         
-        headers = ["Autore", "Data", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti", "TIPO"]
+        headers = ["Autore", "Data", "Cliente", "CheckIn", "CheckOut", "Notti", "Ospiti"]
         worksheet.write_row('A1', headers, bold)
-        worksheet.write_row('A2', [autore, datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti, tipo_prev], normal)
+        worksheet.write_row('A2', [autore, datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti], normal)
         
-        # Totali
-        worksheet.write('A5', "PREZZO BASE", bold)
-        worksheet.write('B5', prezzo_finale, currency)
-        
-        if dettagli_pkg:
-             worksheet.write('A6', "DETTAGLI PACCHETTO", bold)
-             worksheet.write('B6', dettagli_pkg, normal)
+        # Totali Base
+        worksheet.write('A5', "PREZZO SOGGIORNO", bold)
+        worksheet.write('B5', prezzo_soggiorno, currency)
+        worksheet.write('A6', "SPESE DI PULIZIA", bold)
+        worksheet.write('B6', spese_pulizia, currency)
         
         # Servizi
         r = 8
@@ -352,14 +218,14 @@ def app_preventivi_affitto():
         r += 1
         worksheet.write(r, 0, "SCONTO EXTRA", bold); worksheet.write(r, 1, sconto, currency)
         r += 1
-        worksheet.write(r, 0, "TOTALE GENERALE", merge_format); worksheet.write(r, 1, prezzo_finale + tot_servizi - sconto, currency)
+        worksheet.write(r, 0, "TOTALE DIRETTO", merge_format); worksheet.write(r, 1, totale_diretto + tot_servizi - sconto, currency)
         
         worksheet.write(r+2, 0, "NOTE INTERNE", bold); worksheet.write(r+2, 1, note, normal)
 
         workbook.close()
         return output.getvalue()
 
-    # --- UI AFFITTO ---
+    # --- UI PRINCIPALE ---
     with st.container():
         c_aut, c_cli = st.columns([1, 2])
         with c_aut: 
@@ -372,9 +238,9 @@ def app_preventivi_affitto():
         
         c1, c2, c3 = st.columns(3)
         with c1: checkin = st.date_input("Check-In", datetime.date.today(), format="DD/MM/YYYY")
-        default_checkout = checkin + datetime.timedelta(days=MIN_STAY)
+        default_checkout = checkin + datetime.timedelta(days=2)
         with c2: checkout = st.date_input("Check-Out", value=default_checkout, min_value=checkin + datetime.timedelta(days=1), format="DD/MM/YYYY")
-        with c3: ospiti = st.number_input("Ospiti", min_value=1, value=10)
+        with c3: ospiti = st.number_input("Ospiti (Max 26)", min_value=1, max_value=26, value=16)
 
     is_free, msg = check_availability(checkin, checkout, LODGIFY_ICAL_URL)
     if is_free: st.success("✅ DATE DISPONIBILI")
@@ -382,60 +248,44 @@ def app_preventivi_affitto():
     
     notti = (checkout - checkin).days
     
-    # 1. Calcolo Opzione A (Standard / Rental)
-    price_A, log_A, is_high_27 = calcola_opzione_A_standard(checkin, notti, ospiti)
-    
-    # 2. Calcolo Opzione B (Pacchetto) - Solo se idoneo
-    res_B = calcola_opzione_B_pacchetto(checkin, notti)
+    # Calcolo Prezzi
+    prezzo_soggiorno, log_notti = calcola_soggiorno(checkin, notti)
+    totale_diretto = prezzo_soggiorno + SPESE_PULIZIA
+    totale_airbnb = totale_diretto * MOLTIPLICATORE_AIRBNB
     
     st.markdown("---")
-    st.markdown("### 🏷️ Opzioni di Prezzo")
+    st.markdown("### 🏷️ Opzioni di Vendita (Fino a 26 Ospiti)")
     
     col_A, col_B = st.columns(2)
     
-    # BOX OPZIONE A
+    # BOX PREZZO DIRETTO
     with col_A:
-        st.markdown("#### 🅰️ Opzione Rental (Standard)")
-        st.caption("✅ Incl: Pulizie Finali | ❌ Escl: Wedding Fee")
-        st.metric("Totale Affitto", f"€ {price_A:,.0f}")
-        with st.expander("Dettaglio Giornaliero"):
-            for l in log_A: st.write(l)
-            if notti >= 7 and not is_high_27: st.write("✅ Incluso Sconto Settimanale 15% (Old Logic)")
+        st.markdown("#### 🟢 PREZZO DIRETTO")
+        st.caption("✅ Incl: Affitto, Pulizie (€ 600) e Colazione")
+        st.metric("Totale Diretto", f"€ {totale_diretto:,.0f}")
+        with st.expander("Dettaglio Giornaliero Soggiorno"):
+            for l in log_notti: st.write(l)
+            st.write(f"Pulizie Finali: € {SPESE_PULIZIA}")
     
-    # BOX OPZIONE B (Logica Aggressiva)
-    prezzo_da_salvare = price_A
-    desc_da_salvare = "Rental Standard"
-    
+    # BOX PREZZO AIRBNB
     with col_B:
-        st.markdown("#### 🅱️ Opzione Wedding (Aggressive)")
-        st.caption("✅ Incl: Pulizie, Wedding Fee, Colazioni")
-        if res_B:
-            if "error" in res_B:
-                st.error(res_B["error"])
-                usa_B = False
-            else:
-                st.metric("Totale Pacchetto", f"€ {res_B['prezzo']:,.0f}", help=res_B['desc'])
-                st.info(res_B['dettagli'])
-                usa_B = st.checkbox("Seleziona Opzione Pacchetto", value=False)
-                if usa_B:
-                    prezzo_da_salvare = res_B['prezzo']
-                    desc_da_salvare = res_B['desc'] + " | " + res_B['dettagli']
-        else:
-            st.caption("Non disponibile per queste date/durata (Solo Alta '27: Lun-Ven o Gio-Lun o Settimana)")
+        st.markdown("#### 🔴 PREZZO AIRBNB / PORTALI")
+        st.caption("Maggiorazione del 5% applicata")
+        st.metric("Totale Portali", f"€ {totale_airbnb:,.0f}", help="Da inserire sulle OTA")
 
     st.markdown("---")
     
     # --- SERVIZI EXTRA ---
-    st.markdown("### 🍷 Servizi")
+    st.markdown("### 🍷 Servizi e Fee")
     dettagli_servizi_excel = {}
     totale_servizi = 0
     
     for nome, prezzo_def in LISTA_SERVIZI:
         with st.expander(f"{nome}"):
-            if "Wedding" in nome:
+            if "Wedding Fee" in nome or "Extra Event Fee" in nome:
                 c1, c2 = st.columns(2)
-                p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
-                pax = c2.number_input("Invitati", min_value=0, key=f"x_{nome}")
+                p_unit = c1.number_input(f"€ {nome} (a pax)", value=prezzo_def, key=f"p_{nome}")
+                pax = c2.number_input("Numero Ospiti", min_value=0, key=f"x_{nome}")
                 qta = 1 
             elif "Truffle" in nome:
                 c1, c2 = st.columns(2)
@@ -444,7 +294,7 @@ def app_preventivi_affitto():
                 qta = 1
             elif "Prima Spesa" in nome:
                 p_unit = st.number_input(f"Costo Scontrino", value=0.0, key=f"p_{nome}"); pax=1; qta=1
-            elif "Transfer" in nome or "Extra Cleaning" in nome or "Extra Event" in nome:
+            elif "Transfer" in nome:
                 c1, c2 = st.columns(2)
                 p_unit = c1.number_input(f"€ {nome}", value=prezzo_def, key=f"p_{nome}")
                 pax = 1 
@@ -470,32 +320,30 @@ def app_preventivi_affitto():
     with col_note:
         note = st.text_area("Note Interne")
 
-    totale_generale = prezzo_da_salvare + totale_servizi - sconto_manuale
+    totale_generale_diretto = totale_diretto + totale_servizi - sconto_manuale
     
     st.divider()
-    st.markdown(f"## TOTALE PREVENTIVO: € {totale_generale:,.2f}")
-    if desc_da_salvare != "Rental Standard":
-        st.caption(f"Basato su: {desc_da_salvare}")
+    st.markdown(f"## TOTALE PREVENTIVO DIRETTO: € {totale_generale_diretto:,.2f}")
         
     b1, b2 = st.columns(2)
     
     is_valid = True
     if autore == "Seleziona...": is_valid=False
-    if notti < MIN_STAY: is_valid=False
+    if notti < 1: is_valid=False
     
     with b1:
         if st.button("☁️ SALVA SOLO CLOUD", use_container_width=True):
             if is_valid:
-                riga = [autore, desc_da_salvare, datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti, prezzo_da_salvare, totale_generale, note]
+                riga = [autore, "Diretto", datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti, totale_diretto, totale_generale_diretto, note]
                 if salva_su_google_sheets(riga): st.toast("✅ Salvato!");
-            else: st.error("Dati incompleti")
+            else: st.error("Dati incompleti o Autore non selezionato")
             
     with b2:
         if is_valid:
-            excel_data = generate_excel(autore, cliente, checkin, checkout, notti, ospiti, prezzo_da_salvare, dettagli_servizi_excel, sconto_manuale, note, desc_da_salvare, res_B['dettagli'] if res_B and 'dettagli' in res_B else "")
+            excel_data = generate_excel(autore, cliente, checkin, checkout, notti, ospiti, prezzo_soggiorno, SPESE_PULIZIA, totale_diretto, dettagli_servizi_excel, sconto_manuale, note)
             
             def callback_save():
-                 riga = [autore, desc_da_salvare, datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti, prezzo_da_salvare, totale_generale, note]
+                 riga = [autore, "Diretto", datetime.date.today().strftime("%d/%m/%Y"), cliente, checkin.strftime("%d/%m/%Y"), checkout.strftime("%d/%m/%Y"), notti, ospiti, totale_diretto, totale_generale_diretto, note]
                  salva_su_google_sheets(riga)
                  st.toast("✅ Salvato e Scaricato!")
 
