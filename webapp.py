@@ -264,7 +264,9 @@ def app_preventivi_affitto():
         st.markdown("#### 🟢 PREZZO DIRETTO")
         st.caption("✅ Incl: Affitto, Pulizie (€ 600) e Colazione")
         st.metric("Totale Diretto", f"€ {totale_diretto:,.0f}")
-        with st.expander("Dettaglio Giornaliero Soggiorno"):
+        
+        # MODIFICA QUI: L'expander è ora 'expanded=True' per mostrare i dettagli di default
+        with st.expander("Dettaglio Giornaliero Soggiorno", expanded=True):
             for l in log_notti: st.write(l)
             st.write(f"Pulizie Finali: € {SPESE_PULIZIA}")
     
