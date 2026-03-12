@@ -81,7 +81,7 @@ def app_preventivi_affitto():
     MIN_STAY = 3
     
     # --------------------------------------------------------------------------
-    # LOGICA DATE E STAGIONI
+    # LOGICA DATE E STAGIONI UNIFICATA (Valida per tutti gli anni)
     # --------------------------------------------------------------------------
     def get_stagione_pura(data):
         anno = data.year
@@ -109,12 +109,12 @@ def app_preventivi_affitto():
             else:
                 return "Alta"
                 
-        # Estate: Giugno e Luglio (più la coda di Maggio già gestita) -> ALTA
-        if mese in [6, 7]:
+        # Estate/Settembre: Giugno, Luglio e Settembre -> ALTA
+        if mese in [6, 7, 9]:
             return "Alta"
             
-        # Tarda Estate e Autunno: Agosto, Settembre, Ottobre -> MEDIA
-        if mese in [8, 9, 10]:
+        # Agosto e Ottobre -> MEDIA
+        if mese in [8, 10]:
             return "Media"
             
         # Autunno inoltrato/Inverno: Novembre e fino al 20 Dicembre -> BASSA
@@ -124,13 +124,13 @@ def app_preventivi_affitto():
         return "Bassa" # Fallback di sicurezza
 
     # --------------------------------------------------------------------------
-    # CALCOLO PREZZO SOGGIORNO
+    # CALCOLO PREZZO SOGGIORNO UNIFICATO
     # --------------------------------------------------------------------------
     def calcola_soggiorno(data_arrivo, notti):
         tot_base = 0
         log = []
         
-        # NUOVA GRIGLIA PREZZI (Flat fino a 26 pax)
+        # GRIGLIA PREZZI FLAT UNICA (Fino a 26 pax)
         PRICES = {
             "Alta":  {"Infra": 4000, "We": 5200},
             "Media": {"Infra": 3200, "We": 4160},
@@ -308,7 +308,6 @@ def app_preventivi_affitto():
             
             if (("Prima Spesa" in nome and p_unit > 0) or (p_unit > 0 and pax > 0 and qta > 0)):
                 sub = p_unit * pax * qta
-                # RISOLTO BUG DEL DOPPIO CALCOLO (era totale_servizi += sub due volte)
                 dettagli_servizi_excel[nome] = {'p_unit': p_unit, 'pax': pax, 'qta': qta, 'subtotale': sub}
                 totale_servizi += sub
 
