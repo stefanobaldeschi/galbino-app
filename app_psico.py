@@ -110,7 +110,7 @@ try:
     sh = get_db()
     ws_diario = sh.worksheet("Diario")
     
-    # Richiama i dati (se li ha già in memoria, ci mette zero secondi e zero richieste!)
+    # Richiama i dati dalla cache
     attivi, storico, memoria_prezzi, debug_info = get_dati_intelligenti()
     
     # --- FORM ---
@@ -135,10 +135,16 @@ try:
         
     st.write("")
     
-    c1, c2 = st.columns([1, 1])
+    # --- NUOVA RIGA A 3 COLONNE ---
+    c1, c2, c3 = st.columns([1, 1, 1])
+    
     with c1:
         tipo = st.radio("Modalità", ["Presenza", "Online"])
+        
     with c2:
+        tipo_seduta = st.selectbox("Tipo di seduta", ["Individuale", "Di coppia"])
+        
+    with c3:
         prezzo_suggerito = 0.0
         msg_help = "Inserisci importo"
         
@@ -152,18 +158,22 @@ try:
     st.divider()
     
     if st.button("💾 REGISTRA SEDUTA", type="primary", use_container_width=True, disabled=(not paziente or prezzo == 0)):
+        
+        # Uniamo la modalità (Presenza/Online) con il tipo (Individuale/Coppia)
+        modalita_finale = f"{tipo} ({tipo_seduta})"
+        
         riga = [
             data_seduta.strftime("%d/%m/%Y"),
             paziente,
-            tipo,
+            modalita_finale,
             f"{prezzo:.2f}".replace(".", ","),
             note,
             "DA FARE"
         ]
         ws_diario.append_row(riga)
-        st.success(f"✅ Salvato: {paziente} - € {prezzo}")
+        st.success(f"✅ Salvato: {paziente} - {modalita_finale} - € {prezzo}")
         
-        # Svuotiamo la cache così la prossima volta che carica rileggerà il nuovo paziente/prezzo inserito!
+        # Svuotiamo la cache per aggiornare i dati
         get_dati_intelligenti.clear()
         
         time.sleep(1.5)
